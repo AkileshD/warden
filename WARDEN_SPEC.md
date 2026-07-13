@@ -359,7 +359,26 @@ Flow inside the sidecar:
 
 ---
 
-### 7.3 Enforcement Mechanism — v2.0 (explicitly deferred, not started)
+### 7.3 Limitation: Stateless SNI Filtering (Phase 2.5 TODO)
+
+**RISK: hostname/SNI-based allow rules cannot fire under the current stateless first-packet default-deny model; only IP/CIDR-based rules currently function.**
+
+In a default-deny firewall (where the default `0.0.0.0/0` rule is `BLOCK`), a stateless packet inspector evaluates every packet entirely on its own. For an HTTPS connection, the very first packet is a TCP `SYN` packet. This packet contains no payload and therefore no Server Name Indication (SNI) string.
+
+Because `NetworkInspector` looks at this empty `SYN` packet and sees no hostname, it cannot match any hostname-based `ALLOW` rules (like `api.openai.com`). It falls through to the default `BLOCK` rule, and the packet is dropped immediately. The TCP handshake is killed before the client ever has a chance to send the TLS `ClientHello` (which contains the SNI).
+
+**The Phase 2.5 Fix (Connection Tracking):**
+To support hostname rules, the sidecar must implement stateful connection tracking (conntrack). The flow will look like this:
+1. **Provisional Allow**: When a TCP `SYN` packet arrives with no payload, if there are *any* hostname rules for that port, provisionally accept it and log the connection state.
+2. **Handshake Completion**: Allow the `SYN-ACK` and `ACK` to pass.
+3. **SNI Inspection**: Once the `ClientHello` packet arrives, inspect the SNI.
+4. **Retroactive Enforcement**: If the SNI matches an `ALLOW` rule, let the connection continue. If it doesn't match (or if the packet was non-TLS or malformed), immediately drop the packet, flush the connection state, and send a TCP `RST` to kill the connection.
+
+*Do not implement this now. It is scoped as a concrete follow-up to ensure this architectural gap is addressed.*
+
+---
+
+### 7.4 Enforcement Mechanism — v2.0 (explicitly deferred, not started)
 
 **Rust + eBPF/XDP.**
 
@@ -374,7 +393,7 @@ Do not design the v1.0 NFQUEUE sidecar as if it will "just be swapped" for eBPF 
 
 ---
 
-### 7.4 Component Breakdown
+### 7.5 Component Breakdown
 
 **`docker-compose.yml` (new file, project root)**
 - Defines two services: `jail` (existing container) and `warden-sidecar` (new).
@@ -435,7 +454,7 @@ Default policy for Phase 2 demo: **block all outbound traffic except an explicit
 
 ---
 
-### 7.5 Phase 2 Deliverable / Demo Definition
+### 7.6 Phase 2 Deliverable / Demo Definition
 
 A recorded session where:
 1. The `docker-compose up` command brings up both containers.
@@ -445,7 +464,7 @@ A recorded session where:
 
 ---
 
-### 7.6 Antigravity Prompts — Phase 2
+### 7.7 Antigravity Prompts — Phase 2
 
 Use these sequentially after Phase 1's jail container is verified. Paste the "Shared Context" block once at the start of the session, then feed each step prompt as the previous one is complete. **Do not execute any of these yet.**
 
@@ -627,3 +646,4 @@ Sequence (do not reorder):
 ## Changelog
 - **0.1** — Initial spec created. Phase 1 scope finalized (structural parsing, policy-as-data, fake/real executors, unified ledger). Phase 2 network-enforcement mechanism corrected (passive Scapy sniff ≠ enforcement; NFQUEUE/eBPF needed for actual blocking). Architecture locked as headless daemon + thin read-only clients from the start.
 - **0.2** — Phase 2 architecture finalized (2026-07-13). §7 rewritten from stub to full spec: sidecar container pattern via docker-compose; agent jail remains fully unprivileged; sidecar gets `CAP_NET_ADMIN` only. v1.0 mechanism: Python + NFQUEUE (`netfilterqueue`) for packet-level enforcement, Scapy for parsing only. v2.0 migration (Rust + eBPF/XDP) explicitly deferred with a clear note that it affects the container/orchestration layer, not just the code. Full component breakdown added (§7.4): docker-compose.yml, sidecar/Dockerfile, interceptor.py, PacketParser, NetworkInspector, policy.yaml network_rules extension, Ledger integration. Six sequential Antigravity prompts written (§7.6) — not executed. §10 stack table updated: NFQUEUE/Python as current v1.0 choice, eBPF/Rust as planned v2.0 migration, conditional framing removed.
+- **0.3** — Documented stateless SNI filtering limitation in Phase 2 (§7.3) and scoped connection-tracking fix for Phase 2.5. Section numbers bumped accordingly.
