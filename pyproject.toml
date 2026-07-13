@@ -15,6 +15,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-cov",
+    "openai>=1.0.0",
 ]
 
 [tool.setuptools.packages.find]

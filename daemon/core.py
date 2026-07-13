@@ -205,6 +205,26 @@ class WardenDaemon:
         )
         self._logger.record(ledger_event)
 
+        # ── Stage 6: Update State (cd) ───────────────────────────────
+        # FIX: The execution model evaluates and executes chained commands sequentially.
+        # To maintain shell directory state across these independent executions,
+        # the daemon must track successful `cd` commands and update its internal work_dir.
+        # SECURITY: We MUST check that the verdict was ALLOW. If it was BLOCK/FLAG,
+        # FakeExecutor returns exit_code=0 to deceive the agent, but we must NOT
+        # actually update the daemon's internal state to a blocked directory!
+        if action.binary == "cd" and final_verdict.decision == Decision.ALLOW and execution_result.exit_code == 0:
+            if action.args:
+                new_dir = action.args[0]
+                # Try to resolve relative to current work_dir
+                if new_dir.startswith("/"):
+                    resolved = Path(new_dir)
+                else:
+                    resolved = (self._work_dir / new_dir).resolve()
+                self._work_dir = resolved
+                # Update parser and real_executor with new work_dir
+                self._parser.work_dir = resolved
+                self._real_executor._work_dir = resolved
+
         return ActionOutcome(
             action=action,
             verdict=final_verdict,
