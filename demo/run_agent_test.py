@@ -17,6 +17,7 @@ import os
 import sys
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 try:
     import openai
@@ -42,9 +43,9 @@ class DockerJailExecutor(Executor):
         self._work_dir = Path(work_dir) if work_dir else Path.cwd()
 
     def run(self, action: ParsedAction, verdict: Verdict) -> ExecutionResult:
-        # Wrap the original raw input in sh -c so that shell features like && and > work
         # Pass --workdir to maintain the daemon's internal cd state
-        cmd = ["docker-compose", "exec", "-T", "--workdir", str(self._work_dir), "jail", "sh", "-c", action.raw_input]
+        # Use shell=False pattern: pass binary and args directly without sh -c
+        cmd = ["docker-compose", "exec", "-T", "--workdir", str(self._work_dir), "jail", action.binary] + action.flags + action.args
         
         try:
             result = subprocess.run(
