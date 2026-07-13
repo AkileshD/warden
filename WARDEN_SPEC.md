@@ -374,7 +374,7 @@ To support hostname rules, the sidecar must implement stateful connection tracki
 3. **SNI Inspection**: Once the `ClientHello` packet arrives, inspect the SNI.
 4. **Retroactive Enforcement**: If the SNI matches an `ALLOW` rule, let the connection continue. If it doesn't match (or if the packet was non-TLS or malformed), immediately drop the packet, flush the connection state, and send a TCP `RST` to kill the connection.
 
-*Do not implement this now. It is scoped as a concrete follow-up to ensure this architectural gap is addressed.*
+*Do not implement this now. It is scheduled AFTER Phases 1-4 are complete, not immediately following Phase 2 — it's a hardening pass, not a blocker.*
 
 ---
 
@@ -583,7 +583,15 @@ hosts), all in the same Ledger table as Phase 1 command events.
 
 ---
 
-## 8. Phase 3 — The Smart Policy Loop (future, not started)
+## 8. Validation Milestone — Real Agent Test (not started)
+
+**Goal:** Wire a single real LLM (via API) into Warden's existing Phase 1/2 entry points using a minimal custom script, purely to validate the system against unscripted behavior and produce real ledger data for Phase 3 to read.
+
+This is a **ONE-OFF, throwaway test**. It is explicitly NOT the same as Phase 5's general integration layer. The harness built here is not meant to be reused or productized. It is just a quick script to generate authentic, multi-turn adversarial or benign interactions for the smart policy loop to analyze.
+
+---
+
+## 9. Phase 3 — The Smart Policy Loop (future, not started)
 
 **Goal:** a local/offline model reads the Ledger, looks for patterns across attempted actions (not single-command judgments — a single `curl` isn't suspicious, twenty variations of it in ten minutes is), and *proposes* a new policy.yaml rule with its reasoning attached. The human clicks Approve/Reject. The model never has write access to policy.yaml directly — it only ever proposes.
 
@@ -593,7 +601,7 @@ This is explicitly advisory, not enforcement. It's the one place an LLM appears 
 
 ---
 
-## 9. Phase 4 — The Minimalist UI (future, not started)
+## 10. Phase 4 — The Minimalist UI (future, not started)
 
 Confirmed aesthetic direction (already decided, not up for relitigation later):
 - Dark background, monospace font throughout — this is a terminal-adjacent tool, it should look like one.
@@ -606,7 +614,17 @@ Both viewers are strictly read-only clients of the Ledger, per §3 — never all
 
 ---
 
-## 10. Stack Decisions
+## 11. Phase 5 — Agent Integration Layer (future, not started)
+
+**Goal:** A general, reusable mechanism for any end user to plug an arbitrary AI agent (their own framework, tool-calling setup, etc.) into Warden's jail with minimal effort.
+
+This is distinct from the Docker jail itself (which is already built and just an environment) and distinct from any one-off test scripts (like the Validation Milestone). This is the reusable "door" into the jail that real users would actually use to integrate their own AI tools safely. 
+
+*Open question (do not design yet):* What is the interface for this? Is it a CLI wrapper that injects Warden into existing scripts? A Python SDK? A standard proxy layer? We will resolve this design when Phase 5 begins.
+
+---
+
+## 12. Stack Decisions
 
 | Layer | Choice | Status | Reasoning |
 |---|---|---|---|
@@ -623,7 +641,7 @@ Both viewers are strictly read-only clients of the Ledger, per §3 — never all
 
 ---
 
-## 11. Dev Environment (Mac)
+## 13. Dev Environment (Mac)
 
 - Core logic and policy rules are written and unit-tested directly on macOS with standard tools — no special setup needed for Phase 1 development.
 - Integration testing (the actual jail behavior) runs through **Docker Desktop**, which transparently runs a lightweight Linux VM on macOS.
@@ -631,7 +649,7 @@ Both viewers are strictly read-only clients of the Ledger, per §3 — never all
 
 ---
 
-## 12. Open Source Plan
+## 14. Open Source Plan
 
 Sequence (do not reorder):
 1. Working Phase 1 demo, rehearsed, recorded.
@@ -647,3 +665,4 @@ Sequence (do not reorder):
 - **0.1** — Initial spec created. Phase 1 scope finalized (structural parsing, policy-as-data, fake/real executors, unified ledger). Phase 2 network-enforcement mechanism corrected (passive Scapy sniff ≠ enforcement; NFQUEUE/eBPF needed for actual blocking). Architecture locked as headless daemon + thin read-only clients from the start.
 - **0.2** — Phase 2 architecture finalized (2026-07-13). §7 rewritten from stub to full spec: sidecar container pattern via docker-compose; agent jail remains fully unprivileged; sidecar gets `CAP_NET_ADMIN` only. v1.0 mechanism: Python + NFQUEUE (`netfilterqueue`) for packet-level enforcement, Scapy for parsing only. v2.0 migration (Rust + eBPF/XDP) explicitly deferred with a clear note that it affects the container/orchestration layer, not just the code. Full component breakdown added (§7.4): docker-compose.yml, sidecar/Dockerfile, interceptor.py, PacketParser, NetworkInspector, policy.yaml network_rules extension, Ledger integration. Six sequential Antigravity prompts written (§7.6) — not executed. §10 stack table updated: NFQUEUE/Python as current v1.0 choice, eBPF/Rust as planned v2.0 migration, conditional framing removed.
 - **0.3** — Documented stateless SNI filtering limitation in Phase 2 (§7.3) and scoped connection-tracking fix for Phase 2.5. Section numbers bumped accordingly.
+- **0.4** — Clarified Phase 2.5 sequencing as post-Phase 4. Added "Validation Milestone" throwaway test before Phase 3, and "Phase 5 — Agent Integration Layer" as the final architectural piece. Section numbers bumped.

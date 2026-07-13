@@ -90,7 +90,7 @@ warden/
 
 > Update this every session. Mark each item `not_started` / `in_progress` / `done` (done = has passing tests, not just exists).
 
-**Active phase:** Phase 1 complete; Phase 2 architecture decided, no code started.
+**Active phase:** Phase 1 complete; Phase 2 complete. Validation Milestone and Phase 5 specs added (no code built yet).
 
 ### Phase 1 — Smart Command Deception ✅ COMPLETE
 
@@ -128,31 +128,24 @@ warden/
 
 ```
 Phase 1: COMPLETE. All 77 tests pass. Demo runs clean.
-Phase 2: Step 4 (Ledger verification) COMPLETE. 155 total tests passing.
+Phase 2: COMPLETE. 155 tests pass. End-to-end interceptor built and demoed successfully.
 
 Phase 2 files completed:
-  Step 1: docker-compose.yml, sidecar/Dockerfile, sidecar/interceptor.py (stub)
+  Step 1: docker-compose.yml, sidecar/Dockerfile
   Step 2: daemon/parser/packet_parser.py + tests/test_packet_parser.py
   Step 3: daemon/inspectors/network_inspector.py + tests/test_network_inspector.py
-           daemon/rules/policy.yaml (network_rules section appended)
-  Step 4: daemon/ledger/logger.py (one branch added) +
-          tests/test_ledger_network_integration.py
+           daemon/rules/policy.yaml (network_rules section)
+  Step 4: daemon/ledger/logger.py (one branch added) + tests
+  Step 5: sidecar/interceptor.py (full NFQUEUE implementation)
+  Step 6: demo/run_phase2_demo.py (orchestrates test, queries SQLite ledger in sidecar)
 
-Ledger findings:
-  Schema: ZERO changes. event_type TEXT + parsed_action TEXT (JSON blob) already
-  designed for this. No migration needed.
-  Logger: ONE minimal change required. _serialise_parsed_action had a base
-  ParsedAction branch only. Since ParsedNetworkAction IS-A ParsedAction, it would
-  silently reach the base branch and drop dst_ip/dst_port/protocol/hostname_or_sni/
-  direction. Fix: isinstance(action, ParsedNetworkAction) check first.
-  raw_bytes deliberately excluded from the JSON blob (binary, large, reconstructable).
+Findings & Spec Updates:
+  - Discovered that stateless SNI filtering is incompatible with a default-deny model (the first packet is an empty SYN, so it drops before ClientHello). Documented this as a Phase 2.5 follow-up (conntrack) in WARDEN_SPEC.md.
+  - Added "Validation Milestone — Real Agent Test" (one-off throwaway test) to WARDEN_SPEC.md before Phase 3.
+  - Added "Phase 5 — Agent Integration Layer" (reusable entry point) to WARDEN_SPEC.md after Phase 4.
+  - Neither of the new additions have code built yet; they are spec-only.
 
-Next step: §7.6 Step 5 — interceptor.py NFQUEUE implementation.
-PREREQUISITE: verify nfnetlink_queue kernel module first:
-  docker run --rm --cap-add=NET_ADMIN python:3.11-slim \
-    python3 -c "import netfilterqueue; print('OK')"
-
-GIF/README-embed/Show HN remain deferred.
+Next step: Validation Milestone (Real Agent Test).
 ```
 
 ---
@@ -183,7 +176,8 @@ GIF/README-embed/Show HN remain deferred.
 - **Phase 2 Step 2 complete (2026-07-13)** — `daemon/parser/packet_parser.py` and `tests/test_packet_parser.py` written. 31 new tests, 108 total passing. `ParsedNetworkAction` subclasses `ParsedAction` directly — Inspector contract satisfied without changes to the ABC. SNI extraction is manual byte-level parsing of TLS ClientHello (RFC 5246) — no Scapy TLS layer dependency. DNS query name extraction via RFC 1035 label decoding. Direction inferred from RFC1918 src IP heuristic. `parse()` never raises.
 - **Phase 2 Step 3 complete (2026-07-13)** — `daemon/inspectors/network_inspector.py` and `tests/test_network_inspector.py` written. 34 new tests, 142 total passing. Returns `None` for non-network actions (silent no-op in shell path). Default-deny: BLOCK when no rule matches. IP matching via `ipaddress` module (CIDR, `strict=False`). Hostname: exact + single-label wildcard (RFC 6125). `policy.yaml` extended with `network_rules` section: 6 rules covering LLM API allowlists, Docker bridge, loopback, and catch-all BLOCK.
 - **Phase 2 Step 4 complete (2026-07-13)** — Ledger verified: zero schema changes needed. `schema.sql` was already designed for this (`event_type` discriminator + `parsed_action` JSON blob). One minimal `logger.py` change: added `isinstance(action, ParsedNetworkAction)` branch in `_serialise_parsed_action` — without it, subclass fields (`dst_ip`, `dst_port`, `protocol`, `hostname_or_sni`, `direction`) would be silently dropped. `raw_bytes` excluded from blob (binary, large). 13 new integration tests, 155 total passing.
-
+- **Phase 2 complete (2026-07-13)** — `sidecar/interceptor.py` completed with full `netfilterqueue` integration. Added demo script (`demo/run_phase2_demo.py`) that successfully tests container routing, IP-based allowlisting, and ledger logging from within the sidecar. Documented stateless SNI filtering limitation in spec and scoped connection tracking for Phase 2.5.
+- **Spec expanded (2026-07-13)** — Added "Validation Milestone — Real Agent Test" to `WARDEN_SPEC.md` (a throwaway script to generate real ledger data) and "Phase 5 — Agent Integration Layer" (the generalized, reusable user-facing entry point). Updated `WARDEN_BUILD_CONTEXT.md` to note both exist only in spec so far.
 ---
 
 ## 7. Note on Future Files (do not build yet — context only)
