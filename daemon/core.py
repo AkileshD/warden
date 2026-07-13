@@ -138,21 +138,39 @@ class WardenDaemon:
         force an all-or-nothing decision. Processing independently gives correct
         granularity and a cleaner ledger (one row per actual command, not one
         row per raw input containing a chain).
+
+        WHY split-then-reparse (not parse-all-upfront): chained commands like
+        "cd ./project && echo hello > test.py" contain path references that
+        MUST be resolved relative to the CURRENT work_dir at the time each
+        sub-command executes, not the work_dir at parse time. A preceding cd
+        changes the daemon's work_dir, so later sub-commands must be re-parsed
+        against the updated work_dir. We split on operators first (cheap string
+        op), then parse each segment individually right before executing it.
         """
         raw_command = raw_command.strip()
         if not raw_command:
             return ProcessResult(outcomes=[])
 
-        # ── Stage 1: Parse ───────────────────────────────────────────
-        actions = self._parser.parse(raw_command)
-        if not actions:
+        # ── Stage 1: Split on operators ──────────────────────────────
+        # Split the raw command into segments on shell operators (; && || |)
+        # but do NOT parse them yet — parsing resolves paths, and we need
+        # each segment parsed with the work_dir current at execution time.
+        segments = self._parser._split_on_operators(raw_command)
+        if not segments:
             return ProcessResult(outcomes=[])
 
         outcomes: list[ActionOutcome] = []
 
-        for action in actions:
-            outcome = self._process_single(action, raw_command)
-            outcomes.append(outcome)
+        for segment in segments:
+            segment = segment.strip()
+            if not segment:
+                continue
+            # Re-parse this single segment with the CURRENT work_dir
+            # (which may have been updated by a preceding cd in this chain)
+            actions = self._parser.parse(segment)
+            for action in actions:
+                outcome = self._process_single(action, raw_command)
+                outcomes.append(outcome)
 
         return ProcessResult(outcomes=outcomes)
 

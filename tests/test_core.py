@@ -126,3 +126,90 @@ def test_daemon_redirection_blocked(redirect_env):
     assert not target_file.exists()
     
     daemon.close()
+
+@pytest.fixture
+def nested_chain_env():
+    """Environment for testing cd -> mkdir -> cd -> redirect chains."""
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td).resolve()
+        policy_path = tdp / "policy.yaml"
+        ledger_path = tdp / "warden.db"
+        work_dir = tdp / "workspace"
+        project_dir = work_dir / "project"
+        project_dir.mkdir(parents=True)
+
+        # Allow cd, mkdir, and echo everywhere
+        policy = {
+            "default_action": "flag",
+            "rules": [
+                {
+                    "action": "allow",
+                    "match": {
+                        "binary": ["cd", "mkdir", "echo", "cat"],
+                        "path_scope": ["*"]
+                    }
+                }
+            ]
+        }
+        with open(policy_path, "w") as f:
+            yaml.dump(policy, f)
+
+        yield tdp, policy_path, ledger_path, work_dir, project_dir
+
+def test_daemon_cd_then_redirect_nested_chain(nested_chain_env):
+    """Regression test: cd into project, mkdir subdir, cd into subdir,
+    then redirect echo output to a file there. This exact pattern failed
+    because process() parsed all sub-commands upfront, resolving paths
+    against the INITIAL work_dir instead of the CURRENT work_dir after
+    each cd took effect."""
+    tdp, policy_path, ledger_path, work_dir, project_dir = nested_chain_env
+    daemon = WardenDaemon(
+        policy_path=policy_path, ledger_path=ledger_path, work_dir=work_dir
+    )
+
+    # Execute the exact chain that was failing
+    res = daemon.process(
+        "cd project && mkdir testdir && cd testdir && echo 'hello nested' > test.py"
+    )
+
+    # All sub-commands should succeed
+    assert res.exit_code == 0, (
+        f"Chain failed with exit_code={res.exit_code}; "
+        f"outcomes: {[(o.action.binary, o.execution_result.exit_code, o.execution_result.stderr) for o in res.outcomes]}"
+    )
+
+    # Daemon state should be in the nested directory
+    expected_dir = (project_dir / "testdir").resolve()
+    assert daemon._work_dir == expected_dir
+
+    # The file should exist at workspace/project/testdir/test.py
+    target_file = project_dir / "testdir" / "test.py"
+    assert target_file.exists(), (
+        f"Expected file at {target_file}, but it doesn't exist. "
+        f"Daemon work_dir is {daemon._work_dir}"
+    )
+    assert target_file.read_text().strip() == "hello nested"
+
+    daemon.close()
+
+def test_daemon_cd_then_cat_nested_chain(nested_chain_env):
+    """Verify that after cd + redirect, a subsequent read (cat) in the same
+    chain correctly resolves paths against the updated work_dir."""
+    tdp, policy_path, ledger_path, work_dir, project_dir = nested_chain_env
+    daemon = WardenDaemon(
+        policy_path=policy_path, ledger_path=ledger_path, work_dir=work_dir
+    )
+
+    # Create the nested structure and file
+    res1 = daemon.process(
+        "cd project && mkdir testdir && cd testdir && echo 'readback test' > output.txt"
+    )
+    assert res1.exit_code == 0
+
+    # Now cat the file — work_dir should still be at project/testdir
+    res2 = daemon.process("cat output.txt")
+    assert res2.exit_code == 0
+    assert res2.stdout.strip() == "readback test"
+
+    daemon.close()
+
