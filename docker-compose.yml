@@ -1,0 +1,171 @@
+# docker-compose.yml — Warden Phase 2
+#
+# WHY this file exists:
+#   Phase 2 requires two containers that are tightly coupled at the network
+#   level. Wiring that by hand with raw `docker run` flags is error-prone
+#   and not reproducible. docker-compose lets us declare both containers,
+#   their security settings, their shared storage, and their network
+#   relationship in one place, and bring them up/down atomically.
+#
+# Two services:
+#   jail          — the AI agent's sandbox (unchanged from Phase 1 design)
+#   warden-sidecar — the network interceptor (new in Phase 2)
+#
+# Key architectural decision — WHY network_mode: "service:jail":
+#   iptables rules set inside a container only affect THAT container's
+#   Linux network namespace. If the sidecar were a peer container on the
+#   same bridge, its iptables rules would intercept the sidecar's own
+#   traffic, not the jail's. By sharing the jail's network namespace
+#   (network_mode: "service:jail"), the sidecar and jail see the same
+#   network interfaces and routing table. iptables rules inserted by the
+#   sidecar are written into the jail's namespace — so every packet the
+#   jail emits hits those rules. This is the correct sidecar pattern.
+#
+# WHY the bridge is NOT marked internal:true:
+#   internal:true removes the network's gateway to the outside world.
+#   That would prevent the jail from even attempting outbound connections,
+#   giving NFQUEUE nothing to intercept. The sidecar's iptables/NFQUEUE
+#   rules ARE the enforcement mechanism — not Docker network isolation.
+#   The bridge exists only for any future peer services (viewers, etc.).
+#   The jail's egress is controlled by the sidecar, not by Docker ACLs.
+
+services:
+
+  # ── jail ──────────────────────────────────────────────────────────────
+  # The AI agent's container. Strictly unprivileged. Security profile is
+  # identical to Phase 1 — adding a sidecar does not relax any of these
+  # constraints. The jail never learns that a sidecar exists.
+  jail:
+    build:
+      # Builds from jail/Dockerfile (Phase 1 artifact — unmodified).
+      context: ./jail
+    image: warden-jail
+
+    # cap_drop: ALL — every Linux capability stripped. The agent process
+    # runs with the same permissions as any normal unprivileged user.
+    # It cannot bind low-numbered ports, manipulate network interfaces,
+    # mount filesystems, or do anything requiring elevated kernel access.
+    cap_drop:
+      - ALL
+    # No cap_add — the jail gets NOTHING back. This is intentional and
+    # must never be relaxed without an explicit architectural decision.
+
+    # read_only: true — the container's root filesystem is mounted
+    # read-only at runtime. The agent cannot write files anywhere except
+    # the explicitly-provided tmpfs (/tmp) and workspace bind-mount.
+    read_only: true
+
+    # tmpfs at /tmp — Python needs somewhere writable for .pyc bytecode
+    # cache. /tmp is an in-memory filesystem that never touches disk and
+    # disappears completely when the container stops.
+    tmpfs:
+      - /tmp
+
+    # no-new-privileges — even if a binary inside the container has setuid
+    # bits, this flag prevents them from being exercised to gain privileges.
+    security_opt:
+      - no-new-privileges:true
+
+    volumes:
+      # /workspace: the agent's project directory. This is the only path
+      # the agent can legitimately write files. Matches WORKDIR /workspace
+      # in jail/Dockerfile and the Phase 1 policy rule for ./project/**.
+      - ./project:/workspace:rw
+
+      # DELIBERATE OMISSION: no warden_ledger volume here.
+      # The agent must never know it is being logged or watched — that is
+      # the core deception principle. Mounting the ledger into the jail,
+      # even read-only, would give the agent the ability to detect that a
+      # log file exists and infer the interception mechanism. It gets nothing.
+
+    networks:
+      - warden_bridge
+
+    # Default command: keep the container alive so the sidecar can attach
+    # to its network namespace. In real use this becomes the agent process
+    # or Warden's shell wrapper.
+    command: ["/bin/bash", "-c", "sleep infinity"]
+
+
+  # ── warden-sidecar ────────────────────────────────────────────────────
+  # The network interceptor. Shares the jail's network namespace so that
+  # iptables rules it inserts affect the jail's traffic. Has CAP_NET_ADMIN;
+  # the jail does not and never will.
+  warden-sidecar:
+    build:
+      context: ./sidecar
+    image: warden-sidecar
+
+    # network_mode: "service:jail" — THE key directive for the sidecar.
+    # This tells Docker: do not create a new network namespace for this
+    # container; instead, share the network namespace of the "jail" service.
+    # Effect:
+    #   - The sidecar sees the jail's eth0 interface and IP address.
+    #   - iptables rules inserted by the sidecar are in the jail's namespace.
+    #   - netfilterqueue binds to a queue in that shared namespace.
+    #   - Every packet the jail tries to send hits the sidecar's rules.
+    # Because network_mode overrides the normal networking stack, the sidecar
+    # is NOT separately listed under networks: — it is on warden_bridge by
+    # virtue of sharing the jail's namespace.
+    network_mode: "service:jail"
+
+    # cap_drop: ALL first, then cap_add: NET_ADMIN — same pattern as the jail
+    # for cap_drop, but the sidecar gets exactly one capability back.
+    cap_drop:
+      - ALL
+    cap_add:
+      # NET_ADMIN is the Linux capability required to:
+      #   - Run iptables to insert/delete NFQUEUE redirect rules
+      #   - Call socket operations needed by netfilterqueue
+      # This is the ONLY capability granted to the sidecar.
+      # The jail has this capability: never.
+      - NET_ADMIN
+
+    security_opt:
+      - no-new-privileges:true
+
+    volumes:
+      # Project source tree, read-only. The sidecar imports Warden daemon
+      # modules (daemon.inspectors.network_inspector, daemon.ledger.logger,
+      # etc.) directly from the source tree via PYTHONPATH=/app.
+      # Read-only because the sidecar is Warden code, not an agent — it has
+      # no legitimate reason to write to the source tree.
+      - .:/app:ro
+
+      # warden_ledger volume: the sidecar is the ONLY container that writes
+      # to the SQLite ledger. It gets read-write access. Future viewer
+      # containers (CLI, dashboard) will mount this read-only.
+      - warden_ledger:/data/ledger:rw
+
+    environment:
+      # PYTHONPATH: makes `import daemon.inspectors.network_inspector` etc.
+      # resolve correctly relative to the /app bind-mount.
+      - PYTHONPATH=/app
+      # WARDEN_LEDGER_PATH: the path to the SQLite file inside the container.
+      # interceptor.py reads this to know where to write events.
+      - WARDEN_LEDGER_PATH=/data/ledger/warden.db
+
+    # depends_on: jail — ensures the jail container (and its network namespace)
+    # exists before the sidecar tries to attach to it via network_mode.
+    # Without this, the sidecar could start before the jail's namespace is
+    # ready and fail to attach.
+    depends_on:
+      - jail
+
+
+# ── Named volumes ────────────────────────────────────────────────────────
+volumes:
+  # warden_ledger: Docker-managed persistent storage for the SQLite ledger.
+  # Docker creates and manages this directory on the host. It persists across
+  # docker-compose down / up cycles (data survives restarts).
+  # To wipe it: docker-compose down -v (the -v flag removes named volumes).
+  warden_ledger:
+
+
+# ── Networks ─────────────────────────────────────────────────────────────
+networks:
+  # warden_bridge: the bridge network the jail is connected to.
+  # Not marked internal:true — see the file-level comment above for why.
+  # The sidecar is NOT listed here because network_mode overrides networking.
+  warden_bridge:
+    driver: bridge

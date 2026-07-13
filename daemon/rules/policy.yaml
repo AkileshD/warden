@@ -1,0 +1,153 @@
+# Warden Phase 1 — Command Policy
+# WHY: Policy is data, not code. All enforcement decisions trace back to rules
+# in this file. To add or change a dangerous pattern, edit here — never write
+# `if binary == "..."` in Python. See WARDEN_SPEC.md §4 and §6.
+#
+# Rule evaluation: top-down, first-match wins (iptables model).
+# The first rule whose binary AND path_scope both match the action is applied.
+# Order matters: put more specific rules above more general ones.
+#
+# path_scope patterns:
+#   - Positive pattern (e.g. "**/.env"): rule fires if any target path matches.
+#   - Negative pattern (e.g. "!./project/**"): rule fires if any target path
+#     is OUTSIDE the allowed scope (does not match the positive form).
+#   - "*": matches any path (or no path — catches commands with no file args).
+#
+# action values: allow | block | flag
+# risk values:   low | medium | high  (informational — logged to ledger)
+
+rules:
+  # ── Destructive system-level commands outside the project directory ──────────
+  # RISK: rm/dd/shred inside the project dir are allowed by the catch-all below.
+  # That's intentional: agents doing legitimate file work shouldn't be blocked.
+  # An agent deleting /etc, /usr, or / is what we're catching here.
+  - match:
+      binary: ["rm", "dd", "shred", "mkfs", "fdisk", "wipefs"]
+      path_scope: ["!./project/**"]
+    action: block
+    risk: high
+
+  # ── Credential / secret file reads ──────────────────────────────────────────
+  # Matches any reader binary targeting known secret file patterns, anywhere.
+  # WHY cat/less/head/tail/grep/awk/sed: agents commonly use all of these to
+  # extract file contents — blocking only `cat` would be trivially bypassed.
+  - match:
+      binary: ["cat", "less", "head", "tail", "grep", "awk", "sed", "more", "strings"]
+      path_scope: ["**/.env", "**/*.pem", "**/id_rsa*", "**/id_ed25519*",
+                   "**/*.key", "**/credentials*", "**/*.pfx", "**/*.p12",
+                   "**/*secret*", "**/*token*", "**/.netrc", "**/.aws/credentials"]
+    action: block
+    risk: high
+
+  # ── Privilege escalation ─────────────────────────────────────────────────────
+  - match:
+      binary: ["sudo", "su", "doas", "pkexec"]
+      path_scope: ["*"]
+    action: block
+    risk: high
+
+  # ── Network exfiltration / outbound calls ───────────────────────────────────
+  # FLAG (not block) so Phase 3 advisory AI can analyse patterns across sessions.
+  # Until Phase 3 exists, FLAG is treated as block by the core loop.
+  - match:
+      binary: ["curl", "wget", "nc", "ncat", "netcat", "ssh", "scp", "rsync", "ftp", "sftp"]
+      path_scope: ["*"]
+    action: flag
+    risk: medium
+
+  # ── Safe commands anywhere inside the project directory ─────────────────────
+  # WHY this rule exists: a catch-all ALLOW for the project sandbox so that
+  # normal agent work (read files, run scripts, list dirs) flows without friction.
+  - match:
+      binary: ["*"]
+      path_scope: ["./project/**"]
+    action: allow
+    risk: low
+
+# Anything not matched by the rules above gets this treatment.
+# FLAG means: log prominently, treat as block until Phase 3 exists.
+# WHY FLAG and not BLOCK: unmatched commands aren't necessarily dangerous —
+# they may just be unusual. Marking them FLAG lets Phase 3 distinguish
+# "known bad" (BLOCK) from "unknown, needs review" (FLAG).
+default_action: flag
+
+# ── Phase 2: Network egress policy ──────────────────────────────────────────
+#
+# Evaluated by NetworkInspector (daemon/inspectors/network_inspector.py).
+# Rule structure differs from shell rules: match dimensions are dst_ip (CIDR or
+# exact), dst_port (integer or "*"), and hostname (exact or *.wildcard).
+# All present dimensions must match (AND semantics). Absent keys = open/wildcard.
+#
+# Rule evaluation: top-down, first-match wins — same model as the command rules.
+# Put specific allowlist entries ABOVE the default-deny catch-all.
+#
+# Default posture: BLOCK everything unless explicitly allowed.
+# WHY default-deny (not default-flag): network egress to an unknown host is
+# categorically more dangerous than an unknown shell command. An agent has no
+# legitimate reason to reach an arbitrary IP. If it's not on the allowlist,
+# the answer is no. See WARDEN_SPEC.md §7.4.
+#
+# To add an allowed destination:
+#   - By hostname:  add a match.hostname entry (e.g. "api.openai.com" or "*.openai.com")
+#   - By IP/CIDR:  add a match.dst_ip entry (e.g. "10.0.0.0/8")
+#   - Scope by port: add match.dst_port (e.g. [443]) or omit for all ports.
+#
+# WARNING: the order of rules matters. A broad allow rule placed above a specific
+# block rule will shadow the block rule. Always put narrow allows before broad ones.
+
+network_rules:
+
+  # ── Allowlist: LLM API providers ─────────────────────────────────────────
+  # Agents running LLM-integrated workflows legitimately need these endpoints.
+  # Port 443 only — these APIs don't serve on other ports.
+  - match:
+      hostname: ["api.openai.com", "*.openai.com"]
+      dst_port: [443]
+    action: allow
+    risk: low
+    reason: "OpenAI API — allowed LLM provider"
+
+  - match:
+      hostname: ["api.anthropic.com"]
+      dst_port: [443]
+    action: allow
+    risk: low
+    reason: "Anthropic API — allowed LLM provider"
+
+  - match:
+      hostname: ["generativelanguage.googleapis.com", "*.googleapis.com"]
+      dst_port: [443]
+    action: allow
+    risk: low
+    reason: "Google APIs — allowed LLM provider"
+
+  # ── Allowlist: local Docker bridge (inter-container communication) ─────────
+  # 172.16.0.0/12 covers Docker's default bridge subnet range. Allows the
+  # jail to reach the warden-sidecar or any other internal service without
+  # being blocked. RISK: this allows all inter-container traffic — narrow
+  # this to specific service IPs if needed once the compose setup is stable.
+  - match:
+      dst_ip: ["172.16.0.0/12"]
+    action: allow
+    risk: low
+    reason: "Docker bridge — inter-container traffic"
+
+  # ── Allowlist: loopback ───────────────────────────────────────────────────
+  - match:
+      dst_ip: ["127.0.0.0/8"]
+    action: allow
+    risk: low
+    reason: "loopback — local process communication"
+
+  # ── Default-deny catch-all ────────────────────────────────────────────────
+  # This rule matches everything not caught above. It must be LAST.
+  # WHY block and not flag: see module-level comment in network_inspector.py.
+  # NetworkInspector also implements default-deny internally (when no rule
+  # matches at all), but having an explicit catch-all rule here makes the
+  # policy self-documenting and ensures the reason in the ledger is clear.
+  - match:
+      dst_ip: ["0.0.0.0/0"]
+    action: block
+    risk: high
+    reason: "default-deny — destination not on allowlist"
+

@@ -1,0 +1,6 @@
+# jail/.dockerignore
+# Files in this directory that should NOT be copied into the image build context.
+# The Dockerfile doesn't use COPY so this is mostly precautionary, but good practice.
+*.md
+*.sh
+tests/
