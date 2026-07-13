@@ -622,6 +622,9 @@ This is distinct from the Docker jail itself (which is already built and just an
 
 *Open question (do not design yet):* What is the interface for this? Is it a CLI wrapper that injects Warden into existing scripts? A Python SDK? A standard proxy layer? We will resolve this design when Phase 5 begins.
 
+**Phase 5 Backlog / Known Issues (from Validation Milestone):**
+- **TODO(phase5): Container directory state persistence.** Investigate if directory state (e.g., `mkdir project`) actually persists in the jail container across separate executor invocations, or if it only exists in the daemon's internal `_work_dir` tracking.
+- **TODO(phase5): Argument ordering bugs.** Investigate potential scrambling of argument order during parsing/execution (e.g., `find` command throwing "paths must precede expression"). The `ShellParser` and/or `RealExecutor` may be incorrectly ordering flags vs positional args when reassembling commands.
 ---
 
 ## 12. Stack Decisions
