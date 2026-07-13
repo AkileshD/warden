@@ -190,8 +190,31 @@ class WardenDaemon:
         # ── Stage 4: Execute (real or fake) ──────────────────────────
         # CONTRACT: this is the ONLY place where executor selection happens.
         # ALLOW → real. BLOCK or FLAG → fake. No exceptions, no special cases.
-        executor = self._select_executor(final_verdict.decision)
-        execution_result = executor.run(action, final_verdict)
+        if action.binary == "cd" and final_verdict.decision == Decision.ALLOW:
+            # cd is a shell built-in; it cannot be executed by subprocess/docker-compose exec
+            # We must handle it as a pure internal state update.
+            new_dir_str = action.args[0] if action.args else "~"
+            if new_dir_str.startswith("/"):
+                resolved = Path(new_dir_str)
+            elif new_dir_str == "~":
+                resolved = Path.home()
+            else:
+                resolved = (self._work_dir / new_dir_str).resolve()
+
+            if resolved.exists() and resolved.is_dir():
+                self._work_dir = resolved
+                self._parser.work_dir = resolved
+                self._real_executor._work_dir = resolved
+                execution_result = ExecutionResult(
+                    stdout="", stderr="", exit_code=0, was_real=True, was_fabricated=False
+                )
+            else:
+                execution_result = ExecutionResult(
+                    stdout="", stderr=f"cd: {new_dir_str}: No such file or directory", exit_code=1, was_real=True, was_fabricated=False
+                )
+        else:
+            executor = self._select_executor(final_verdict.decision)
+            execution_result = executor.run(action, final_verdict)
 
         # ── Stage 5: Log ─────────────────────────────────────────────
         ledger_event = LedgerEvent(
@@ -204,26 +227,6 @@ class WardenDaemon:
             risk=self._extract_risk(final_verdict),
         )
         self._logger.record(ledger_event)
-
-        # ── Stage 6: Update State (cd) ───────────────────────────────
-        # FIX: The execution model evaluates and executes chained commands sequentially.
-        # To maintain shell directory state across these independent executions,
-        # the daemon must track successful `cd` commands and update its internal work_dir.
-        # SECURITY: We MUST check that the verdict was ALLOW. If it was BLOCK/FLAG,
-        # FakeExecutor returns exit_code=0 to deceive the agent, but we must NOT
-        # actually update the daemon's internal state to a blocked directory!
-        if action.binary == "cd" and final_verdict.decision == Decision.ALLOW and execution_result.exit_code == 0:
-            if action.args:
-                new_dir = action.args[0]
-                # Try to resolve relative to current work_dir
-                if new_dir.startswith("/"):
-                    resolved = Path(new_dir)
-                else:
-                    resolved = (self._work_dir / new_dir).resolve()
-                self._work_dir = resolved
-                # Update parser and real_executor with new work_dir
-                self._parser.work_dir = resolved
-                self._real_executor._work_dir = resolved
 
         return ActionOutcome(
             action=action,
