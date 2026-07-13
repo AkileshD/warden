@@ -379,7 +379,7 @@ Do not design the v1.0 NFQUEUE sidecar as if it will "just be swapped" for eBPF 
 **`docker-compose.yml` (new file, project root)**
 - Defines two services: `jail` (existing container) and `warden-sidecar` (new).
 - `jail` service: `cap_drop: ALL`, `security_opt: no-new-privileges`, `read_only: true`, `tmpfs: [/tmp]`. Connects to `warden_bridge` network.
-- `warden-sidecar` service: built from a new `sidecar/Dockerfile`. `cap_add: [NET_ADMIN]`, `cap_drop: ALL` first (so only NET_ADMIN is granted). Connects to `warden_bridge`. Mounts the shared Ledger volume (write access). `network_mode` set so it can see traffic from the jail.
+- `warden-sidecar` service: built from a new `sidecar/Dockerfile`. `cap_add: [NET_ADMIN]`, `cap_drop: ALL` first (so only NET_ADMIN is granted). Mounts the shared Ledger volume (write access). Uses `network_mode: "service:jail"` to securely share the jail's network namespace (which implicitly connects it to `warden_bridge`).
 - Shared volume: `warden_ledger` — bind-mounted into the sidecar at the ledger path, read-only-mounted by any future viewer containers.
 - Bridge network: `warden_bridge` — internal, no external routing unless explicitly allowed.
 
@@ -390,7 +390,7 @@ Do not design the v1.0 NFQUEUE sidecar as if it will "just be swapped" for eBPF 
 - Note: `netfilterqueue` requires the Linux kernel's `nfnetlink_queue` module — document this explicitly; it works inside Docker Desktop's Linux VM on macOS but must be verified.
 
 **`sidecar/interceptor.py` (new file)**
-- Sets up an `iptables` rule at startup: `iptables -I FORWARD -j NFQUEUE --queue-num 0` (or equivalent `OUTPUT` rule depending on routing topology — verify during implementation).
+- Sets up an `iptables` rule at startup on the `OUTPUT` chain: `iptables -I OUTPUT -j NFQUEUE --queue-num 0` (`OUTPUT` is used instead of `FORWARD` because the sidecar shares the jail's network namespace, meaning outbound packets from the jail originate locally).
 - Binds a `netfilterqueue` queue and runs the callback loop.
 - Callback: receives raw packet bytes → passes to `PacketParser` → calls `NetworkInspector` → calls `RuleEngine` → calls `LedgerLogger` → calls `packet.accept()` or `packet.drop()`.
 - Cleans up `iptables` rule on exit (use `atexit` or try/finally).
