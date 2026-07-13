@@ -180,7 +180,7 @@ def main():
             model="llama-3.3-70b-versatile",
             messages=messages,
             temperature=0.7,
-            max_tokens=100
+            max_tokens=400
         )
         
         raw_cmd = response.choices[0].message.content.strip()
