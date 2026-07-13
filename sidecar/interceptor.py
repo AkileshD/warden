@@ -3,165 +3,182 @@
 sidecar/interceptor.py — Warden Network Sidecar Interceptor
 
 CONTRACT: This is the entry point for the warden-sidecar container.
-          Full implementation is TODO(phase5). This stub:
-            1. Verifies the ledger volume is mounted and writable.
-            2. Verifies netfilterqueue is importable (proves the
-               nfnetlink_queue kernel module is present and loaded).
-            3. Stays alive so docker-compose does not mark the service
-               as crashed, allowing the container setup to be validated
-               before any NFQUEUE code is written.
-
-WHY a stub rather than nothing:
-    docker-compose up starts all services. If interceptor.py doesn't
-    exist or exits immediately, Docker marks the sidecar as exited/failed.
-    The stub lets us verify the full container environment — volume mounts,
-    network namespace sharing, capability grants — before writing a single
-    line of NFQUEUE/iptables code. Separate concerns: get the infrastructure
-    right first, then add the interception logic on top of a known-good base.
-
-STARTUP SEQUENCE (to be implemented in phase5):
-    1. setup_iptables()
-         Insert: iptables -I OUTPUT -j NFQUEUE --queue-num 0
-         WHY OUTPUT (not FORWARD): because the sidecar shares the jail's
-         network namespace (network_mode: "service:jail" in compose). From
-         inside that shared namespace, the jail's outbound packets appear
-         as OUTPUT packets — they originate from this namespace. FORWARD
-         would apply to packets being routed through a namespace, not
-         packets originating within it.
-         Register atexit handler to remove the rule on clean exit.
-    2. nfqueue.bind(queue_num=0, callback=packet_callback)
-    3. nfqueue.run()  — blocks, calling packet_callback for each packet
-    On KeyboardInterrupt or signal: teardown_iptables(), exit cleanly.
-
-PER-PACKET CALLBACK (to be implemented in phase5):
-    packet_callback(packet):
-        raw = packet.get_payload()
-        parsed = PacketParser.parse(raw)          # daemon/parser/packet_parser.py
-        verdict = NetworkInspector.inspect(parsed) # daemon/inspectors/network_inspector.py
-        final = RuleEngine.evaluate([verdict])     # daemon/rules/engine.py
-        LedgerLogger.record(LedgerEvent(...))      # daemon/ledger/logger.py
-        if final.decision == Decision.ALLOW:
-            packet.accept()
-        else:                                      # BLOCK or FLAG → drop
-            packet.drop()
+It intercepts outbound network traffic from the jail using NFQUEUE.
 """
 
 import os
 import sys
-import time
+import argparse
+import subprocess
+import atexit
+import yaml
 
-# TODO(phase5): from daemon.parser.packet_parser import PacketParser
-# TODO(phase5): from daemon.inspectors.network_inspector import NetworkInspector
-# TODO(phase5): from daemon.rules.engine import RuleEngine
-# TODO(phase5): from daemon.ledger.logger import LedgerLogger, LedgerEvent
-# TODO(phase5): import netfilterqueue
-# TODO(phase5): import subprocess (for iptables calls)
+try:
+    import netfilterqueue  # type: ignore
+except ImportError:
+    pass
+
+from daemon.parser.packet_parser import PacketParser
+from daemon.inspectors.network_inspector import NetworkInspector
+from daemon.rules.engine import RuleEngine
+from daemon.ledger.logger import Logger as LedgerLogger, LedgerEvent
+from daemon.executors.base import ExecutionResult
+from daemon.inspectors.base import Decision
 
 LEDGER_PATH = os.environ.get("WARDEN_LEDGER_PATH", "/data/ledger/warden.db")
+POLICY_PATH = os.environ.get("WARDEN_POLICY_PATH", "daemon/rules/policy.yaml")
 NFQUEUE_NUM = 0
 
 
 def verify_environment() -> bool:
-    """
-    Verify the container environment before attempting any NFQUEUE work.
-    Returns True if all checks pass, False (and prints errors) otherwise.
-
-    Checks:
-      1. Ledger directory exists and is writable.
-      2. netfilterqueue is importable (proves nfnetlink_queue kernel module
-         is loaded — if the module is missing, this import raises OSError).
-    """
+    """Verify the container environment before attempting NFQUEUE work."""
     ok = True
-
-    # Check 1: ledger volume mount
     ledger_dir = os.path.dirname(LEDGER_PATH)
     if not os.path.isdir(ledger_dir):
-        print(
-            f"[warden-sidecar] ERROR: ledger directory {ledger_dir!r} does not exist.\n"
-            "  Is the warden_ledger volume mounted? Check docker-compose.yml volumes.",
-            file=sys.stderr,
-            flush=True,
-        )
+        print(f"[warden-sidecar] ERROR: ledger directory {ledger_dir!r} does not exist.", file=sys.stderr, flush=True)
         ok = False
     else:
-        # Try writing a canary file to confirm write permission.
         canary = os.path.join(ledger_dir, ".sidecar_write_check")
         try:
             with open(canary, "w") as f:
                 f.write("ok")
             os.remove(canary)
-            print(f"[warden-sidecar] ledger volume OK: {ledger_dir} (writable)", flush=True)
         except OSError as e:
-            print(
-                f"[warden-sidecar] ERROR: cannot write to ledger directory {ledger_dir!r}: {e}",
-                file=sys.stderr,
-                flush=True,
-            )
+            print(f"[warden-sidecar] ERROR: cannot write to ledger directory: {e}", file=sys.stderr, flush=True)
             ok = False
 
-    # Check 2: netfilterqueue importability
-    # WHY: if the kernel module nfnetlink_queue is not loaded on the host,
-    # netfilterqueue will import fine but nfqueue.bind() will raise OSError
-    # at runtime. We can detect the module absence early by importing and
-    # doing a quick sanity check here.
     try:
         import netfilterqueue  # type: ignore # noqa: F401
-        print("[warden-sidecar] netfilterqueue import OK (nfnetlink_queue module present)", flush=True)
     except ImportError as e:
-        print(
-            f"[warden-sidecar] ERROR: cannot import netfilterqueue: {e}\n"
-            "  Was it installed in the sidecar image? Try: docker-compose build warden-sidecar",
-            file=sys.stderr,
-            flush=True,
-        )
+        print(f"[warden-sidecar] ERROR: cannot import netfilterqueue: {e}", file=sys.stderr, flush=True)
         ok = False
     except OSError as e:
-        print(
-            f"[warden-sidecar] ERROR: netfilterqueue import raised OSError: {e}\n"
-            "  The nfnetlink_queue kernel module may not be loaded on the host.\n"
-            "  Verify: docker run --rm --cap-add=NET_ADMIN python:3.11-slim \\\n"
-            "    python3 -c \"import netfilterqueue; print('OK')\"",
-            file=sys.stderr,
-            flush=True,
-        )
+        print(f"[warden-sidecar] ERROR: netfilterqueue import raised OSError: {e}", file=sys.stderr, flush=True)
         ok = False
 
     return ok
 
 
-def main() -> None:
-    print("[warden-sidecar] interceptor starting (stub — Phase 5 not yet implemented)", flush=True)
-    print(f"[warden-sidecar] python: {sys.version}", flush=True)
-    print(f"[warden-sidecar] ledger path: {LEDGER_PATH}", flush=True)
-    print(f"[warden-sidecar] NFQUEUE queue number: {NFQUEUE_NUM}", flush=True)
-    print(f"[warden-sidecar] PYTHONPATH: {os.environ.get('PYTHONPATH', '(not set)')}", flush=True)
+def setup_iptables(queue_num: int) -> None:
+    """
+    Insert iptables rule to redirect traffic to NFQUEUE.
 
-    if not verify_environment():
-        print("[warden-sidecar] environment checks FAILED — see errors above", file=sys.stderr, flush=True)
-        sys.exit(1)
-
-    print("[warden-sidecar] environment checks PASSED", flush=True)
-    print(
-        "[warden-sidecar] stub heartbeat loop running.\n"
-        "  NFQUEUE interception is not active — implement in phase5.\n"
-        "  This container is healthy; use it to verify compose networking and volumes.",
-        flush=True,
+    WHY OUTPUT (not FORWARD): The sidecar shares the jail's network namespace
+    (`network_mode: "service:jail"` in docker-compose.yml). From the perspective
+    of this shared namespace, packets generated by the jail's processes originate
+    locally. They therefore traverse the OUTPUT chain. The FORWARD chain only
+    applies to packets being routed *through* the namespace from one interface
+    to another, which is not what the jail is doing.
+    """
+    print(f"[warden-sidecar] Inserting iptables rule on OUTPUT chain for queue {queue_num}...", flush=True)
+    subprocess.run(
+        ["iptables", "-I", "OUTPUT", "-j", "NFQUEUE", "--queue-num", str(queue_num)],
+        check=True
     )
 
-    # TODO(phase5): replace this loop with:
-    #   setup_iptables(queue_num=NFQUEUE_NUM)
-    #   nfqueue = netfilterqueue.NetfilterQueue()
-    #   nfqueue.bind(NFQUEUE_NUM, packet_callback)
-    #   try:
-    #       nfqueue.run()
-    #   except KeyboardInterrupt:
-    #       pass
-    #   finally:
-    #       teardown_iptables(queue_num=NFQUEUE_NUM)
 
-    while True:
-        time.sleep(30)
-        print("[warden-sidecar] heartbeat (stub — no packets being intercepted)", flush=True)
+def teardown_iptables(queue_num: int) -> None:
+    """Remove the iptables rule on exit."""
+    print(f"[warden-sidecar] Removing iptables rule for queue {queue_num}...", flush=True)
+    subprocess.run(
+        ["iptables", "-D", "OUTPUT", "-j", "NFQUEUE", "--queue-num", str(queue_num)],
+        check=False  # Ignore errors if rule is already gone
+    )
+
+
+def build_callback(parser: PacketParser, inspector: NetworkInspector, engine: RuleEngine, logger: LedgerLogger):
+    """Factory to build the packet callback with closed-over dependencies."""
+    def packet_callback(packet) -> None:
+        raw_bytes = packet.get_payload()
+        
+        # 1. Parse
+        try:
+            parsed = parser.parse(raw_bytes)
+        except Exception:
+            # If we absolutely cannot parse it, drop it as malformed.
+            packet.drop()
+            return
+
+        # 2. Inspect
+        verdict = inspector.inspect(parsed)
+        
+        # 3. Evaluate
+        final_verdict = engine.evaluate(parsed, [verdict] if verdict else [])
+        
+        # 4. Log
+        # Network events produce no stdout/stderr or subprocess exit codes.
+        result = ExecutionResult(stdout="", stderr="", exit_code=0, was_real=False, was_fabricated=False)
+        event = LedgerEvent(
+            raw_input=parsed.raw_input,
+            parsed_action=parsed,
+            verdict=final_verdict,
+            result=result,
+            event_type="network"
+        )
+        logger.record(event)
+        
+        # 5. Enforce
+        if final_verdict.decision == Decision.ALLOW:
+            packet.accept()
+        else:
+            packet.drop()
+            
+    return packet_callback
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true", help="Read packet bytes from stdin instead of NFQUEUE")
+    args = parser.parse_args()
+
+    if not args.dry_run and not verify_environment():
+        print("[warden-sidecar] environment checks FAILED", file=sys.stderr, flush=True)
+        sys.exit(1)
+
+    print("[warden-sidecar] Loading components...", flush=True)
+    
+    with open(POLICY_PATH, "r") as f:
+        policy_doc = yaml.safe_load(f)
+    network_rules = policy_doc.get("network_rules", [])
+
+    # Instantiate the 4 pillars of the interception loop
+    packet_parser = PacketParser()
+    inspector = NetworkInspector(network_rules=network_rules)
+    engine = RuleEngine(policy_path=POLICY_PATH)
+    logger = LedgerLogger(db_path=LEDGER_PATH)
+
+    callback = build_callback(packet_parser, inspector, engine, logger)
+
+    if args.dry_run:
+        print("[warden-sidecar] Running in --dry-run mode", flush=True)
+        raw_bytes = sys.stdin.buffer.read()
+        if not raw_bytes:
+            print("No bytes received on stdin.", file=sys.stderr)
+            sys.exit(0)
+            
+        class MockPacket:
+            def __init__(self, payload): self._payload = payload
+            def get_payload(self): return self._payload
+            def accept(self): print("ACTION: ACCEPT")
+            def drop(self): print("ACTION: DROP")
+            
+        callback(MockPacket(raw_bytes))
+        sys.exit(0)
+
+    # Full NFQUEUE mode
+    setup_iptables(queue_num=NFQUEUE_NUM)
+    atexit.register(teardown_iptables, NFQUEUE_NUM)
+
+    nfqueue = netfilterqueue.NetfilterQueue()
+    nfqueue.bind(NFQUEUE_NUM, callback)
+
+    print(f"[warden-sidecar] Listening on NFQUEUE {NFQUEUE_NUM}...", flush=True)
+    try:
+        nfqueue.run()
+    except KeyboardInterrupt:
+        print("\n[warden-sidecar] Shutting down...")
+    finally:
+        nfqueue.unbind()
 
 
 if __name__ == "__main__":
