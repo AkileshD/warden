@@ -166,6 +166,24 @@ The TLS `ClientHello` (which contains the SNI extension) is only sent *after* th
 
 ---
 
+### Parse-Time vs Execution-Time Path Resolution in Chained Commands
+**Phase:** Daemon Core / Shell Emulation. **Why it came up:** `cd project && echo hello > test.py` was writing test.py to the wrong directory.
+
+**Plain English:** When a shell sees `cd project && echo hello > test.py`, it runs `cd` first, changes its internal directory, and THEN interprets `echo hello > test.py` — resolving `test.py` relative to the new directory. Warden's daemon was parsing the ENTIRE chain into structured objects upfront in one pass. All path resolution (including redirect targets) happened against the *initial* working directory, before any `cd` took effect. By the time the `cd` updated the daemon's state, the `echo`'s redirect path had already been baked into its ParsedAction with the wrong absolute path.
+
+**Technical:** `process()` called `self._parser.parse(raw_command)` which returned a list of `ParsedAction` objects with all `redirect_target` and `target_paths` already resolved via `_resolve_path()` against `self.work_dir`. The `cd` handler updated `self._parser.work_dir`, but the ParsedActions were already created. Fix: split the raw command on operators first (`_split_on_operators()` — a cheap string operation that doesn't resolve paths), then re-parse each individual segment right before executing it, so the parser's `work_dir` reflects any preceding `cd`.
+
+---
+
+### Warden as a Shell Feature Emulator (cd, >, >>)
+**Phase:** Daemon Core / Executor. **Why it came up:** `cd` and output redirection are shell built-ins, not real executables, so they cannot work with `subprocess.run(shell=False)`.
+
+**Plain English:** In a real shell, `cd` and `>` are implemented by the shell process itself, not by external programs. When Warden runs commands with `shell=False` (to prevent injection attacks), there is no shell process — the OS tries to find a binary named `cd` in `$PATH` (which doesn't exist) and treats `>` as a literal string argument. Warden must emulate these shell features itself: `cd` becomes a pure Python state update (`self._work_dir = resolved_path`), and `>` becomes Python file I/O (capture subprocess stdout, write to target file with `open()`).
+
+**Technical:** `cd` is intercepted in `_process_single()` before the executor is selected — if the verdict is ALLOW, the daemon resolves the target path, checks `resolved.exists() and resolved.is_dir()`, updates `_work_dir`/`_parser.work_dir`/`_real_executor._work_dir`, and fabricates an `ExecutionResult(exit_code=0)`. Redirection is handled by the parser extracting `redirect_target`/`redirect_append` fields from the token list, and then the executor running the command normally, capturing stdout, and writing it to the target path using Python `open()`. Both features are subject to normal policy evaluation — `redirect_target` is added to `target_paths` so the CommandInspector validates it against path_scope rules.
+
+---
+
 ## Phase 3 — (not started)
 
 ---
