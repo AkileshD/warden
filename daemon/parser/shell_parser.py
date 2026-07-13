@@ -50,12 +50,15 @@ class ParsedAction:
     target_paths: list[Path] = field(default_factory=list)  # Resolved filesystem paths
     raw_input: str = ""                      # Original string that produced this action
     sub_commands: list[ParsedAction] = field(default_factory=list)  # From $(...) / backtick
+    redirect_target: Optional[Path] = None   # Target path if command ends with > or >>
+    redirect_append: bool = False            # True if >>, False if >
 
     def __repr__(self) -> str:
         return (
             f"ParsedAction(binary={self.binary!r}, flags={self.flags}, "
             f"args={self.args}, target_paths={[str(p) for p in self.target_paths]}, "
-            f"sub_commands={len(self.sub_commands)})"
+            f"sub_commands={len(self.sub_commands)}, "
+            f"redirect_target={self.redirect_target})"
         )
 
 
@@ -214,11 +217,42 @@ class ShellParser:
         if not tokens:
             return None
 
+        # ── Output Redirection Detection ──
+        redirect_target: Optional[Path] = None
+        redirect_append = False
+        
+        # Scan tokens for > or >>
+        for i, token in enumerate(tokens):
+            if token in (">", ">>") and i + 1 < len(tokens):
+                redirect_append = (token == ">>")
+                target_str = tokens[i + 1]
+                resolved = self._resolve_path(target_str)
+                if resolved:
+                    redirect_target = resolved
+                # Remove > and the target file from tokens
+                tokens = tokens[:i] + tokens[i + 2:]
+                break
+            elif token.startswith(">") and len(token) > 1:
+                # e.g., >test.py
+                redirect_append = token.startswith(">>")
+                target_str = token[2:] if redirect_append else token[1:]
+                resolved = self._resolve_path(target_str)
+                if resolved:
+                    redirect_target = resolved
+                tokens = tokens[:i] + tokens[i + 1:]
+                break
+
+        if not tokens:
+            return None
+
         binary = tokens[0]
         flags: list[str] = []
         args: list[str] = []
         target_paths: list[Path] = []
         sub_commands: list[ParsedAction] = []
+        
+        if redirect_target:
+            target_paths.append(redirect_target)
 
         # WHY scan the raw segment for substitutions (not individual tokens):
         # shlex.split() splits "$(find /tmp -name foo)" into ['$(find', '/tmp',
@@ -270,6 +304,8 @@ class ShellParser:
             target_paths=target_paths,
             raw_input=segment,
             sub_commands=sub_commands,
+            redirect_target=redirect_target,
+            redirect_append=redirect_append,
         )
 
     def _resolve_path(self, token: str) -> Optional[Path]:

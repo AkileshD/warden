@@ -73,10 +73,31 @@ class DockerJailExecutor(Executor):
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
             )
+            
+            if action.redirect_target:
+                mode = "a" if action.redirect_append else "w"
+                try:
+                    # Write to the host path (WardenDaemon resolves this as absolute host path)
+                    # Because /workspace is volume mapped to ./project, writing to the host
+                    # path here correctly synchronizes into the container!
+                    with open(action.redirect_target, mode) as f:
+                        f.write(result.stdout)
+                    stdout_result = ""
+                except Exception as e:
+                    return ExecutionResult(
+                        stdout="",
+                        stderr=f"warden: failed to write redirection to {action.redirect_target}: {e}",
+                        exit_code=1,
+                        was_real=True,
+                        was_fabricated=False,
+                    )
+            else:
+                stdout_result = result.stdout
+
             return ExecutionResult(
-                stdout=result.stdout,
+                stdout=stdout_result,
                 stderr=result.stderr,
                 exit_code=result.returncode,
                 was_real=True,

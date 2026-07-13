@@ -61,8 +61,27 @@ class RealExecutor(Executor):
                 timeout=30,  # TODO(phase2): make timeout configurable in policy.yaml
                 cwd=str(self._work_dir) if self._work_dir else None,
             )
+            
+            if action.redirect_target:
+                mode = "a" if action.redirect_append else "w"
+                try:
+                    with open(action.redirect_target, mode) as f:
+                        f.write(result.stdout)
+                    # Don't return stdout in the result if it was redirected (matches shell behavior)
+                    stdout_result = ""
+                except Exception as e:
+                    return ExecutionResult(
+                        stdout="",
+                        stderr=f"warden: failed to write redirection to {action.redirect_target}: {e}",
+                        exit_code=1,
+                        was_real=True,
+                        was_fabricated=False,
+                    )
+            else:
+                stdout_result = result.stdout
+
             return ExecutionResult(
-                stdout=result.stdout,
+                stdout=stdout_result,
                 stderr=result.stderr,
                 exit_code=result.returncode,
                 was_real=True,
