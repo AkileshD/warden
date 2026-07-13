@@ -132,6 +132,17 @@ network_rules:
     risk: low
     reason: "Docker bridge — inter-container traffic"
 
+  # ── Allowlist: example.com (Phase 2 Demo) ────────────────────────────────
+  # WHY: Stateless packet inspection (Phase 2) cannot easily allow connections 
+  # based solely on TLS SNI in a default-deny setup, because 99% of packets 
+  # (SYN, ACK, encrypted payload) lack the SNI and would be dropped. 
+  # We allow example.com by IP to demonstrate a successful allowed connection.
+  - match:
+      dst_ip: ["104.20.23.154"]
+    action: allow
+    risk: low
+    reason: "example.com — allowed by IP for demo purposes"
+
   # ── Allowlist: loopback ───────────────────────────────────────────────────
   - match:
       dst_ip: ["127.0.0.0/8"]

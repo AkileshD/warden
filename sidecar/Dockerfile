@@ -81,6 +81,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # scapy: packet parsing library. Used ONLY for reading and parsing
         # raw bytes — not for sending, crafting, or injecting packets.
         scapy \
+        PyYAML \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Working directory ─────────────────────────────────────────────────────────
