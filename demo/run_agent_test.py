@@ -39,13 +39,34 @@ class DockerJailExecutor(Executor):
     A throwaway executor that runs commands inside the jail via docker-compose exec.
     This bridges Phase 1 (host-based shell interception) and Phase 2 (sidecar network interception).
     """
-    def __init__(self, work_dir: Optional[Path] = None) -> None:
-        self._work_dir = Path(work_dir) if work_dir else Path.cwd()
+    def __init__(self, host_repo_root: Path, work_dir: Optional[Path] = None) -> None:
+        self._host_repo_root = Path(host_repo_root).resolve()
+        self._work_dir = Path(work_dir).resolve() if work_dir else self._host_repo_root
+
+    def _get_container_workdir(self) -> str:
+        """Translate the host's absolute path to the container's absolute path."""
+        try:
+            rel_path = self._work_dir.relative_to(self._host_repo_root)
+            # The container's base is /workspace, which maps to repo_root/project
+            # Wait, repo_root is the root of the Warden repo. 
+            # In docker-compose.yml, the volume is mounted as: ./project:/workspace
+            # Let's verify that. If ./project mounts to /workspace, then repo_root/project == /workspace
+            if rel_path.parts and rel_path.parts[0] == "project":
+                # It's inside project/
+                inner_path = rel_path.relative_to("project")
+                return f"/workspace/{inner_path}".rstrip("/")
+            else:
+                # If the daemon's workdir is outside project (e.g., repo_root itself), 
+                # fallback to /workspace to avoid container chdir errors.
+                return "/workspace"
+        except ValueError:
+            return "/workspace"
 
     def run(self, action: ParsedAction, verdict: Verdict) -> ExecutionResult:
-        # Pass --workdir to maintain the daemon's internal cd state
+        # Pass --workdir to maintain the daemon's internal cd state, mapped to container
+        container_workdir = self._get_container_workdir()
         # Use shell=False pattern: pass binary and args directly without sh -c
-        cmd = ["docker-compose", "exec", "-T", "--workdir", str(self._work_dir), "jail", action.binary] + action.flags + action.args
+        cmd = ["docker-compose", "exec", "-T", "--workdir", container_workdir, "jail", action.binary] + action.flags + action.args
         
         try:
             result = subprocess.run(
@@ -105,7 +126,7 @@ def main():
     )
     
     # The Bridging Trick: override the real executor
-    daemon._real_executor = DockerJailExecutor()
+    daemon._real_executor = DockerJailExecutor(host_repo_root=repo_root)
     
     client = openai.OpenAI(
         api_key=api_key,
