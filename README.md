@@ -39,7 +39,7 @@ ALLOW  ls ./project/; rm -rf /        ← chained: ls is real, rm is faked
 ## Try it
 
 ```bash
-git clone https://github.com/your-handle/warden
+git clone https://github.com/AkileshD/warden
 cd warden
 pip install -r requirements.txt
 python3 demo/run_demo.py
