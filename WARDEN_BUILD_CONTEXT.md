@@ -138,7 +138,28 @@ warden/
 
 ---
 
-## 4. Handoff Note (overwrite this every session — do not append, replace)
+## 4. Backlog / Deferred Items
+
+This is a living list of everything intentionally postponed across the whole project. Update it any time something gets deferred or an item gets picked up and resolved (move resolved items to a "Resolved" subsection with the date/commit, don't delete them).
+
+- **Phase 2.5:** Stateless SNI filtering fix (needs conntrack) — `WARDEN_SPEC.md §7.3`.
+- **v2.0:** eBPF/Rust migration for network interceptor — `WARDEN_SPEC.md §12` (deferred production path).
+- **Phase 5:** Directory-state inconsistency across agent turns (`./project` appeared to vanish) — found during validation milestone.
+- **Phase 5:** Argument-order scrambling in commands like `find` ("paths must precede expression") — found during validation milestone.
+- **Phase 5:** General agent integration layer design not yet decided (CLI wrapper vs SDK vs other).
+- **Phase 3:** FLAG-only ML inspector — named idea, not designed or built.
+- **Phase 3:** Tier 2 "proposed rules" staging file format and location — TBD.
+- **Phase 3:** LLM-based explanation generation for complex multi-factor patterns — open question, not committed. Revisit only if templating proves insufficient.
+- **Daemon CLI:** Control interface protocol (Unix socket vs HTTP vs message queue) — explicit non-decision, deferred until CLI is built.
+- **Jail Base Image:** `requests` package missing from jail image — deliberate decision, not an oversight (declined to expand attack surface).
+
+### Resolved
+
+*(No resolved backlog items yet)*
+
+---
+
+## 5. Handoff Note (overwrite this every session — do not append, replace)
 
 ```
 Validation Milestone: COMPLETE. Real LLM agent loop running successfully against Warden.
@@ -153,7 +174,7 @@ Findings & Backlog Items (Phase 5):
 
 ---
 
-## 5. Open Questions / Conflicts (append, don't delete resolved ones — mark them resolved instead)
+## 6. Open Questions / Conflicts (append, don't delete resolved ones — mark them resolved instead)
 
 **RESOLVED** — Rule precedence: chose first-match-wins (iptables model). Documented in engine.py and locked in by TestRulePrecedenceFirstMatchWins tests.
 
@@ -163,7 +184,7 @@ Findings & Backlog Items (Phase 5):
 
 ---
 
-## 6. Changelog
+## 7. Changelog
 
 - **Initial** — `WARDEN_BUILD_CONTEXT.md` created alongside `WARDEN_SPEC.md`. `design/` directory scaffolded with the visual-spec-before-code gate. No Phase 1 code written yet.
 - **Phase 1 complete (2026-07-12)** — All 6 components implemented: Parser, Inspector interface + CommandInspector, RuleEngine + policy.yaml, RealExecutor + FakeExecutor, Ledger (schema + Logger), Core loop + demo script. 74 tests pass. Demo produces correct interception ledger. Rule precedence: first-match-wins (documented + test-locked). FLAG → fake executor (not allow). macOS symlink resolution handled in tests. Command substitution detection fixed to scan raw segment before shlex tokenisation.
@@ -184,7 +205,7 @@ Findings & Backlog Items (Phase 5):
 - **Phase 3 Spec Revision (2026-07-14)** — Updated `WARDEN_SPEC.md` to reflect a revised design for the Smart Policy Loop. Arrived at through discussion, it was determined that an LLM is unnecessary for the core detection task since the underlying method can be a simple deterministic statistical/decision-tree approach. Explanations will use templates filled with real ledger numbers, keeping the system fully auditable. Introduced a Three-Tier Rule Staging System and Asymmetric Scrutiny for permissive vs restrictive proposals. This is a spec-only update; zero Phase 3 code has been written yet.
 ---
 
-## 7. Note on Future Files (do not build yet — context only)
+## 8. Note on Future Files (do not build yet — context only)
 
 Phase 3 (`WARDEN_SPEC.md §8`, the Smart Policy Loop) will introduce a **separate, runtime file that Warden itself writes to** — a record of patterns the advisory model notices in the Ledger before proposing policy changes. That file is a *product feature of Warden*, lives inside the daemon's own data directory, and is read by the advisory loop and the human approver only. It is unrelated to this file and must not be merged with it when it's eventually built — this file is about *building* Warden; that future file is about *Warden's own runtime memory*. Do not create it now — there is nothing for it to do until Phase 3 exists.
 
