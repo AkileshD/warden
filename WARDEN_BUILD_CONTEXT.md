@@ -91,7 +91,11 @@ warden/
 
 > Update this every session. Mark each item `not_started` / `in_progress` / `done` (done = has passing tests, not just exists).
 
-**Active phase:** Phase 1 complete; Phase 2 complete. Validation Milestone complete. Phase 3 is next.
+**Active phase:** Phase 1 complete; Phase 2 complete. Validation Milestone complete. Phase 3 is next (Spec design updated, zero code written).
+
+### Phase 3 — The Smart Policy Loop 🏗 SPEC DESIGN UPDATED
+
+*Note: The design for Phase 3 has been revised. NO local LLM is needed. The detection work will use deterministic statistical methods (frequency counts, decision trees). Explanations will be template-based. A three-tier staging system and asymmetric scrutiny for permissive vs restrictive proposals will be introduced. This is a **SPEC-ONLY update**; zero Phase 3 code has been written.*
 
 ### Phase 1 — Smart Command Deception ✅ COMPLETE
 
@@ -138,9 +142,9 @@ warden/
 
 ```
 Validation Milestone: COMPLETE. Real LLM agent loop running successfully against Warden.
-The agent makes dynamic decisions, executes real ALLOW-scoped shell commands (creating dirs/files), and has its out-of-bounds network requests (e.g. HTTPS to Anthropic) successfully BLOCKED by the sidecar. Both shell and network events are seamlessly logged to the unified ledger.
+Phase 3 Spec: UPDATED with new deterministic/template-based design. Zero code written yet.
 
-Next step: Phase 3 (The Smart Policy Loop).
+Next step: write the detailed Phase 3 component breakdown + Antigravity prompts in `WARDEN_SPEC.md` §8 (or the current Phase 3 section), same as was done for Phase 1/2, before any code starts.
 
 Findings & Backlog Items (Phase 5):
   - TODO(phase5): Investigate if container directory state (e.g. `mkdir project`) actually persists in the jail container across separate executor invocations, or if it only exists in the daemon's internal `_work_dir` tracking.
@@ -177,6 +181,7 @@ Findings & Backlog Items (Phase 5):
 - **Phase 2 Step 4 complete (2026-07-13)** — Ledger verified: zero schema changes needed. `schema.sql` was already designed for this (`event_type` discriminator + `parsed_action` JSON blob). One minimal `logger.py` change: added `isinstance(action, ParsedNetworkAction)` branch in `_serialise_parsed_action` — without it, subclass fields (`dst_ip`, `dst_port`, `protocol`, `hostname_or_sni`, `direction`) would be silently dropped. `raw_bytes` excluded from blob (binary, large). 13 new integration tests, 155 total passing.
 - **Phase 2 complete (2026-07-13)** — `sidecar/interceptor.py` completed with full `netfilterqueue` integration. Added demo script (`demo/run_phase2_demo.py`) that successfully tests container routing, IP-based allowlisting, and ledger logging from within the sidecar. Documented stateless SNI filtering limitation in spec and scoped connection tracking for Phase 2.5.
 - **Validation Milestone complete (2026-07-13)** — Built and successfully ran `demo/run_agent_test.py`, an autonomous agent loop (using LLMs) against Warden's `DockerJailExecutor`. Confirmed the agent makes dynamic decisions and Warden successfully intercepts and logs both ALLOW-scoped shell commands (creating dirs/files via native Python shell redirection) and BLOCKs out-of-bounds HTTPS requests at the packet level via the sidecar. Added Phase 5 TODOs for container directory persistence and argument ordering bugs.
+- **Phase 3 Spec Revision (2026-07-14)** — Updated `WARDEN_SPEC.md` to reflect a revised design for the Smart Policy Loop. Arrived at through discussion, it was determined that an LLM is unnecessary for the core detection task since the underlying method can be a simple deterministic statistical/decision-tree approach. Explanations will use templates filled with real ledger numbers, keeping the system fully auditable. Introduced a Three-Tier Rule Staging System and Asymmetric Scrutiny for permissive vs restrictive proposals. This is a spec-only update; zero Phase 3 code has been written yet.
 ---
 
 ## 7. Note on Future Files (do not build yet — context only)
