@@ -8,3 +8,6 @@ project/project/
 project/test/
 
 design/
+WARDEN_SPEC.md
+WARDEN_BUILD_CONTEXT.md
+WARDEN_UNDERSTANDING_LOG.md
