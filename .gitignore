@@ -6,3 +6,5 @@ __pycache__/
 test_output.log
 project/project/
 project/test/
+
+design/
