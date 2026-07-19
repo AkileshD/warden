@@ -100,9 +100,11 @@ class WardenDaemon:
         ledger_path: Path,
         work_dir: Optional[Path] = None,
         session_id: Optional[str] = None,
+        ipc_socket_path: Path = Path("ipc_data/warden.sock"),
     ) -> None:
         self._work_dir = Path(work_dir) if work_dir else Path.cwd()
         self._session_id = session_id
+        self._ipc_socket_path = ipc_socket_path
 
         # Component initialisation order matters: Rule Engine must load policy
         # before inspectors are constructed (they receive the parsed rules).
@@ -122,7 +124,7 @@ class WardenDaemon:
         self._logger = Logger(ledger_path)
         
         # Start the IPC listener for network events from the sidecar
-        self._ipc_listener = IPCListener(logger=self._logger)
+        self._ipc_listener = IPCListener(logger=self._logger, socket_path=self._ipc_socket_path)
         self._ipc_listener.start()
 
     # ------------------------------------------------------------------

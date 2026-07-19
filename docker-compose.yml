@@ -132,18 +132,17 @@ services:
       # no legitimate reason to write to the source tree.
       - .:/app:ro
 
-      # warden_ledger volume: the sidecar is the ONLY container that writes
-      # to the SQLite ledger. It gets read-write access. Future viewer
-      # containers (CLI, dashboard) will mount this read-only.
-      - warden_ledger:/data/ledger:rw
+      # IPC socket directory: the sidecar sends network events via this Unix socket
+      # to the Warden daemon running on the host.
+      - ./ipc_data:/tmp/warden_ipc:rw
 
     environment:
       # PYTHONPATH: makes `import daemon.inspectors.network_inspector` etc.
       # resolve correctly relative to the /app bind-mount.
       - PYTHONPATH=/app
-      # WARDEN_LEDGER_PATH: the path to the SQLite file inside the container.
-      # interceptor.py reads this to know where to write events.
-      - WARDEN_LEDGER_PATH=/data/ledger/warden.db
+      # WARDEN_SOCKET_PATH: the path to the IPC socket inside the container.
+      # interceptor.py sends network events here.
+      - WARDEN_SOCKET_PATH=/tmp/warden_ipc/warden.sock
 
     # depends_on: jail — ensures the jail container (and its network namespace)
     # exists before the sidecar tries to attach to it via network_mode.
@@ -154,13 +153,7 @@ services:
 
 
 # ── Named volumes ────────────────────────────────────────────────────────
-volumes:
-  # warden_ledger: Docker-managed persistent storage for the SQLite ledger.
-  # Docker creates and manages this directory on the host. It persists across
-  # docker-compose down / up cycles (data survives restarts).
-  # To wipe it: docker-compose down -v (the -v flag removes named volumes).
-  warden_ledger:
-
+volumes: {}
 
 # ── Networks ─────────────────────────────────────────────────────────────
 networks:

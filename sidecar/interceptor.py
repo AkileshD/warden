@@ -12,6 +12,9 @@ import argparse
 import subprocess
 import atexit
 import yaml
+import json
+import socket
+import time
 
 try:
     import netfilterqueue  # type: ignore
@@ -21,31 +24,20 @@ except ImportError:
 from daemon.parser.packet_parser import PacketParser
 from daemon.inspectors.network_inspector import NetworkInspector
 from daemon.rules.engine import RuleEngine
-from daemon.ledger.logger import Logger as LedgerLogger, LedgerEvent
-from daemon.executors.base import ExecutionResult
 from daemon.inspectors.base import Decision
 
-LEDGER_PATH = os.environ.get("WARDEN_LEDGER_PATH", "/data/ledger/warden.db")
 POLICY_PATH = os.environ.get("WARDEN_POLICY_PATH", "daemon/rules/policy.yaml")
+WARDEN_SOCKET_PATH = os.environ.get("WARDEN_SOCKET_PATH", "/tmp/warden_ipc/warden.sock")
 NFQUEUE_NUM = 0
 
 
 def verify_environment() -> bool:
     """Verify the container environment before attempting NFQUEUE work."""
     ok = True
-    ledger_dir = os.path.dirname(LEDGER_PATH)
-    if not os.path.isdir(ledger_dir):
-        print(f"[warden-sidecar] ERROR: ledger directory {ledger_dir!r} does not exist.", file=sys.stderr, flush=True)
+    socket_dir = os.path.dirname(WARDEN_SOCKET_PATH)
+    if not os.path.isdir(socket_dir):
+        print(f"[warden-sidecar] ERROR: IPC directory {socket_dir!r} does not exist.", file=sys.stderr, flush=True)
         ok = False
-    else:
-        canary = os.path.join(ledger_dir, ".sidecar_write_check")
-        try:
-            with open(canary, "w") as f:
-                f.write("ok")
-            os.remove(canary)
-        except OSError as e:
-            print(f"[warden-sidecar] ERROR: cannot write to ledger directory: {e}", file=sys.stderr, flush=True)
-            ok = False
 
     try:
         import netfilterqueue  # type: ignore # noqa: F401
@@ -86,7 +78,7 @@ def teardown_iptables(queue_num: int) -> None:
     )
 
 
-def build_callback(parser: PacketParser, inspector: NetworkInspector, engine: RuleEngine, logger: LedgerLogger):
+def build_callback(parser: PacketParser, inspector: NetworkInspector, engine: RuleEngine):
     """Factory to build the packet callback with closed-over dependencies."""
     def packet_callback(packet) -> None:
         raw_bytes = packet.get_payload()
@@ -105,17 +97,30 @@ def build_callback(parser: PacketParser, inspector: NetworkInspector, engine: Ru
         # 3. Evaluate
         final_verdict = engine.evaluate(parsed, [verdict] if verdict else [])
         
-        # 4. Log
-        # Network events produce no stdout/stderr or subprocess exit codes.
-        result = ExecutionResult(stdout="", stderr="", exit_code=0, was_real=False, was_fabricated=False)
-        event = LedgerEvent(
-            raw_input=parsed.raw_input,
-            parsed_action=parsed,
-            verdict=final_verdict,
-            result=result,
-            event_type="network"
-        )
-        logger.record(event)
+        # 4. Log via IPC UDS
+        try:
+            payload = {
+                "timestamp": time.time(),
+                "verdict": {
+                    "decision": final_verdict.decision.value,
+                    "reason": final_verdict.reason,
+                    "source_inspector": final_verdict.source_inspector,
+                    "confidence": final_verdict.confidence
+                },
+                "parsed_action": {
+                    "dst_ip": parsed.dst_ip,
+                    "dst_port": parsed.dst_port,
+                    "protocol": parsed.protocol,
+                    "hostname_or_sni": parsed.hostname_or_sni,
+                    "direction": parsed.direction,
+                    "raw_input": parsed.raw_input
+                }
+            }
+            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+                s.sendto(json.dumps(payload).encode("utf-8"), WARDEN_SOCKET_PATH)
+        except Exception as e:
+            # Fallback gracefully if the socket is missing or full
+            print(f"[warden-sidecar] Warning: failed to send event to socket: {e}", file=sys.stderr)
         
         # 5. Enforce
         if final_verdict.decision == Decision.ALLOW:
@@ -141,13 +146,12 @@ def main() -> None:
         policy_doc = yaml.safe_load(f)
     network_rules = policy_doc.get("network_rules", [])
 
-    # Instantiate the 4 pillars of the interception loop
+    # Instantiate the 3 pillars of the interception loop
     packet_parser = PacketParser()
     inspector = NetworkInspector(network_rules=network_rules)
     engine = RuleEngine(policy_path=POLICY_PATH)
-    logger = LedgerLogger(db_path=LEDGER_PATH)
 
-    callback = build_callback(packet_parser, inspector, engine, logger)
+    callback = build_callback(packet_parser, inspector, engine)
 
     if args.dry_run:
         print("[warden-sidecar] Running in --dry-run mode", flush=True)
