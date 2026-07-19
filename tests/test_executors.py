@@ -44,6 +44,19 @@ class TestRealExecutor:
         assert result.was_real is True
         assert result.was_fabricated is False
 
+    def test_timeout_handled(self):
+        import time
+        executor = RealExecutor(timeout=0.1)
+        action = make_action("sleep 1")
+        start = time.time()
+        result = executor.run(action, make_verdict(Decision.ALLOW))
+        elapsed = time.time() - start
+        assert elapsed < 0.5  # Timeout triggered
+        assert result.exit_code == 124
+        assert "timed out after 0.1s" in result.stderr
+        assert result.pid is not None and result.pid > 0
+
+
     def test_true_exits_zero(self):
         executor = RealExecutor()
         action = make_action("true")

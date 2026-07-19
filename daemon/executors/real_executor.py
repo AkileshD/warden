@@ -41,11 +41,12 @@ class RealExecutor(Executor):
     TODO(phase2): environment sanitization (strip secrets from env vars).
     """
 
-    def __init__(self, work_dir: Optional[Path] = None) -> None:
+    def __init__(self, work_dir: Optional[Path] = None, timeout: float = 30.0) -> None:
         # WHY store work_dir: passed as cwd to subprocess so that relative paths
         # in commands (e.g. "ls ./project/") resolve correctly regardless of which
         # directory the daemon process itself was launched from.
         self._work_dir = Path(work_dir) if work_dir else None
+        self._timeout = timeout
 
     def run(self, action: ParsedAction, verdict: Verdict) -> ExecutionResult:
         """Execute action on the real OS and return its output."""
@@ -71,13 +72,13 @@ class RealExecutor(Executor):
             pid = proc.pid  # Available immediately after Popen, before communicate()
 
             try:
-                stdout_raw, stderr_raw = proc.communicate(timeout=30)
+                stdout_raw, stderr_raw = proc.communicate(timeout=self._timeout)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.communicate()  # Drain pipes after kill to avoid zombie/deadlock
                 return ExecutionResult(
                     stdout="",
-                    stderr=f"{action.binary}: timed out after 30s",
+                    stderr=f"{action.binary}: timed out after {self._timeout}s",
                     exit_code=124,
                     was_real=True,
                     was_fabricated=False,
