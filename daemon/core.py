@@ -100,11 +100,11 @@ class WardenDaemon:
         ledger_path: Path,
         work_dir: Optional[Path] = None,
         session_id: Optional[str] = None,
-        ipc_socket_path: Path = Path("ipc_data/warden.sock"),
+        ipc_token_path: Path = Path("ipc_data/token.txt"),
     ) -> None:
         self._work_dir = Path(work_dir) if work_dir else Path.cwd()
         self._session_id = session_id
-        self._ipc_socket_path = ipc_socket_path
+        self._ipc_token_path = ipc_token_path
 
         # Component initialisation order matters: Rule Engine must load policy
         # before inspectors are constructed (they receive the parsed rules).
@@ -113,8 +113,7 @@ class WardenDaemon:
 
         # Inspector chain — ORDER MATTERS: inspectors run in this sequence.
         # The first inspector to register a strong opinion influences the Rule
-        # Engine's final call. Currently a single inspector; extend here for Phase 2.
-        # TODO(phase2): append NetworkInspector here when Phase 2 is built.
+        # Engine's final call. (Network inspection happens in the sidecar, not here).
         self._inspectors: list[Inspector] = [
             CommandInspector(rules=self._rule_engine.rules, work_dir=self._work_dir),
         ]
@@ -124,7 +123,7 @@ class WardenDaemon:
         self._logger = Logger(ledger_path)
         
         # Start the IPC listener for network events from the sidecar
-        self._ipc_listener = IPCListener(logger=self._logger, socket_path=self._ipc_socket_path)
+        self._ipc_listener = IPCListener(logger=self._logger, token_path=self._ipc_token_path)
         self._ipc_listener.start()
 
     # ------------------------------------------------------------------

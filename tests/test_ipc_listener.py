@@ -15,24 +15,32 @@ import tempfile
 
 def test_ipc_listener_receives_and_logs():
     with tempfile.TemporaryDirectory(dir="/tmp") as d:
-        socket_path = Path(d) / "warden.sock"
+        token_path = Path(d) / "token.txt"
         mock_logger = MagicMock(spec=Logger)
         
         # Setup mock to return an action_id when resolve_pending_action is called
         mock_logger.resolve_pending_action.return_value = "fake-action-id"
 
-        listener = IPCListener(logger=mock_logger, socket_path=str(socket_path))
+        # Use an ephemeral port for testing
+        listener = IPCListener(logger=mock_logger, host="127.0.0.1", port=0, token_path=str(token_path))
         listener.start()
         
         # Wait for the socket to be bound
         time.sleep(0.1)
-        assert socket_path.exists()
+        assert token_path.exists()
         
-        # Send a JSON network event via socket
-        client_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        # Get the actual port it bound to
+        bound_port = listener._sock.getsockname()[1]
+        
+        # Read the generated token
+        token = token_path.read_text()
+        
+        # Send a JSON network event via UDP
+        client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         
         payload = {
             "timestamp": 123456.78,
+            "token": token,
             "verdict": {
                 "decision": "BLOCK",
                 "reason": "blocked by rule",
@@ -48,7 +56,7 @@ def test_ipc_listener_receives_and_logs():
             }
         }
         
-        client_sock.sendto(json.dumps(payload).encode("utf-8"), str(socket_path))
+        client_sock.sendto(json.dumps(payload).encode("utf-8"), ("127.0.0.1", bound_port))
         client_sock.close()
         
         # Wait for processing
@@ -76,29 +84,35 @@ def test_ipc_listener_receives_and_logs():
         
         # Stop the listener
         listener.stop()
-        assert not socket_path.exists()
+        assert not token_path.exists()
 
 def test_ipc_listener_survives_garbage_input():
     with tempfile.TemporaryDirectory(dir="/tmp") as d:
-        socket_path = Path(d) / "warden_garbage.sock"
+        token_path = Path(d) / "token.txt"
         mock_logger = MagicMock(spec=Logger)
         
-        listener = IPCListener(logger=mock_logger, socket_path=str(socket_path))
+        listener = IPCListener(logger=mock_logger, host="127.0.0.1", port=0, token_path=str(token_path))
         listener.start()
         
         time.sleep(0.1)
-        assert socket_path.exists()
+        assert token_path.exists()
         
-        client_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        bound_port = listener._sock.getsockname()[1]
+        token = token_path.read_text()
+        
+        client_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         
         # 1. Send completely invalid JSON
-        client_sock.sendto(b"not json at all { { [", str(socket_path))
+        client_sock.sendto(b"not json at all { { [", ("127.0.0.1", bound_port))
         
         # 2. Send valid JSON but not a dict
-        client_sock.sendto(b'["just", "an", "array"]', str(socket_path))
+        client_sock.sendto(b'["just", "an", "array"]', ("127.0.0.1", bound_port))
         
         # 3. Send JSON dict with missing/bad fields
-        client_sock.sendto(b'{"verdict": {"decision": "NOT_AN_ENUM_VALUE"}}', str(socket_path))
+        client_sock.sendto(json.dumps({"token": token, "verdict": {"decision": "NOT_AN_ENUM_VALUE"}}).encode(), ("127.0.0.1", bound_port))
+        
+        # 4. Send valid JSON but missing/wrong token
+        client_sock.sendto(json.dumps({"token": "wrong_token", "timestamp": 123}).encode(), ("127.0.0.1", bound_port))
         
         client_sock.close()
         time.sleep(0.1)

@@ -70,6 +70,12 @@ Any task that produces something visual (a dashboard view, CLI screen layout, ne
 
 This gate is **absolute for anything user-facing.** It is skippable only if the human explicitly says so in the same session (e.g. "just build it plain, skip the mockup step") — never skip it by default or because it seems like a small UI change. Small UI changes are exactly where generic-looking defaults creep in.
 
+### Hard Rules (Permanent Standing Rule Set)
+
+- **Understanding Log Updates:** After any step that introduces a new concept, tool, library, or technique the developer hasn't used before, automatically add an entry to `WARDEN_UNDERSTANDING_LOG.md` without waiting to be asked. Follow the entry format exactly: Plain English then Technical, no analogies, each entry self-contained. Assume nothing is "too basic" to explain. Start every entry with a one-line anchor: what phase/component this is part of, and why it came up.
+- **Commit Cadence:** At the end of every completed step (not every single message, but when a logical chunk of work is done), automatically stage and commit the project state. Use a clear, descriptive commit message. This provides a diffable history and removes the need to paste full file contents back and forth.
+- **Destructive Git Commands:** ANY git command that discards commits or history (`reset --hard`, `force push`, `branch -D`, `checkout` that discards changes) requires explicit user approval BEFORE running it. No exceptions.
+
 ---
 
 ## 2. Repository Map (update if structure changes — cross-check against `WARDEN_SPEC.md §5`)
@@ -147,7 +153,6 @@ This is a living list of everything intentionally postponed across the whole pro
 - **Phase 5:** Directory-state inconsistency across agent turns (`./project` appeared to vanish) — found during validation milestone.
 - **Phase 5:** Argument-order scrambling in commands like `find` ("paths must precede expression") — found during validation milestone.
 - **Phase 5:** General agent integration layer design not yet decided (CLI wrapper vs SDK vs other).
-- **Phase 3 Prerequisite:** Two-Ledgers Gap + Correlation Gap — daemon writes to `warden_demo.db` (host), sidecar writes to `/data/ledger/warden.db` (Docker volume); they have never shared one file. Fix: route daemon ledger writes to the shared `warden_ledger` volume AND add a `pending_actions` table for sub-second action-to-packet correlation. Env-var and PID-based approaches were tested and ruled out (separate PID namespaces). See `WARDEN_SPEC.md §7.4`. Must be fixed before Phase 3.
 - **Phase 3:** FLAG-only ML inspector — named idea, not designed or built.
 - **Phase 3:** Tier 2 "proposed rules" staging file format and location — TBD.
 - **Phase 3:** LLM-based explanation generation for complex multi-factor patterns — open question, not committed. Revisit only if templating proves insufficient.
@@ -156,7 +161,7 @@ This is a living list of everything intentionally postponed across the whole pro
 
 ### Resolved
 
-*(No resolved backlog items yet)*
+- **Phase 3 Prerequisite:** Two-Ledgers Gap + Correlation Gap. Fixed via UDP IPC from sidecar to host daemon, using a pre-shared token and loopback socket, enforcing a single-writer pattern and resolving macOS virtiofs `EOPNOTSUPP` and WAL split-brain issues. Sidecar IPTables modified to exempt its own UDP IPC packets from NFQUEUE interception. See `WARDEN_SPEC.md §7.4`.
 
 ---
 
@@ -206,6 +211,7 @@ Findings & Backlog Items (Phase 5):
 - **Phase 3 Spec Revision (2026-07-14)** — Updated `WARDEN_SPEC.md` to reflect a revised design for the Smart Policy Loop. Arrived at through discussion, it was determined that an LLM is unnecessary for the core detection task since the underlying method can be a simple deterministic statistical/decision-tree approach. Explanations will use templates filled with real ledger numbers, keeping the system fully auditable. Introduced a Three-Tier Rule Staging System and Asymmetric Scrutiny for permissive vs restrictive proposals. This is a spec-only update; zero Phase 3 code has been written yet.
 - **Correlation Gap Documented (2026-07-16)** — Added "The Correlation Gap" to `WARDEN_SPEC.md §7.4` and added an eBPF sourcing note to the v2.0 migration section. Discussion surfaced that Phase 3's advisor cannot reliably reason about cause-and-effect without fixing this gap first (linking shell events to network events). Documented env-var tagging (recommended), PID-based, and timestamp-window approaches.
 - **Two-Ledgers Gap Found + Correlation Gap Revised (2026-07-19)** — Live testing confirmed the env-var and PID-based correlation approaches are not viable: jail and sidecar run in separate PID namespaces; `/proc/<pid>/environ` for jail processes is inaccessible from the sidecar. Deeper investigation revealed the Phase 2 "unified ledger" goal was never fully achieved — daemon and sidecar write to two completely separate SQLite files that have never been mounted in the same place. Updated `WARDEN_SPEC.md §7.4` with the compound fix: `pending_actions` table in the shared `warden_ledger` volume (correlation) + routing daemon shell event writes to the same volume (ledger unification). Backlog updated accordingly.
+- **UDP IPC Fix Complete (2026-07-19)** — Successfully replaced sidecar SQLite writes with a UDP IPC link to the daemon. Daemon listens on `0.0.0.0:5005` (with UUID token auth) and performs a single-writer ledger insert. Solves the WAL split-brain issue across Docker Desktop macOS virtiofs. Discovered and fixed an infinite interception loop where the sidecar's `OUTPUT` NFQUEUE iptables rule caught and dropped its own UDP IPC packets by adding an explicit exception rule (`-p udp --dport 5005 -j ACCEPT`). 5x E2E tests passing 5/5.
 ---
 
 ## 8. Note on Future Files (do not build yet — context only)

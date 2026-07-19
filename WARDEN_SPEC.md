@@ -448,19 +448,17 @@ When the sidecar intercepts a packet, it captures the current timestamp (`packet
 
 Because the daemon now receives network events directly from the sidecar, the daemon simply writes both shell and network events to its configured `warden_demo.db`. Phase 3 will have a single SQLite file containing all events, linked by `action_id`, queryable with a plain JOIN.
 
-#### Implementation Breakdown — Unix Socket IPC Fix
+#### Implementation Breakdown — UDP IPC Fix (Final Architecture)
 
-This subsection contains the component-level detail and sequenced Antigravity prompts for building the Unix Socket IPC fix. **Do not execute any of these steps until this plan is approved.**
+This section documents the final implemented architecture for the daemon-sidecar IPC, enforcing a single-writer ledger model over UDP. (Note: `AF_UNIX` sockets were originally planned but abandoned due to `EOPNOTSUPP` virtiofs limitations across the macOS/Linux boundary).
 
 ##### IPC Access: How the Sidecar Reaches the Daemon
-The daemon will create a Unix Domain Socket at a configured path (e.g., `WARDEN_IPC_DIR=/tmp/warden_ipc` -> `/tmp/warden_ipc/warden.sock`). `docker-compose.yml` will bind-mount this directory into the sidecar. The sidecar will be configured with `WARDEN_SOCKET_PATH=/tmp/warden_ipc/warden.sock` and will send UDP-like datagrams (`SOCK_DGRAM`) to this socket.
+The daemon creates a UDP socket bound to `0.0.0.0:5005` on the host. To prevent trivial event injection, the daemon generates a random UUID4 authentication token at startup, writing it to `ipc_data/token.txt`. `docker-compose.yml` bind-mounts this directory read-only into the sidecar. The sidecar reads the token and sends UDP datagrams containing network events to `host.docker.internal:5005`.
 
 ##### Component Breakdown
 
-**`daemon/ledger/schema.sql` [MODIFY]**
-
-Add the `pending_actions` table. No migration strategy required due to `IF NOT EXISTS`. Add an `action_id` column to the `events` table with an ALTER TABLE migration guard.
-
+**`daemon/ledger/schema.sql`**
+Adds the `pending_actions` table.
 ```sql
 CREATE TABLE IF NOT EXISTS pending_actions (
     action_id     TEXT PRIMARY KEY,
@@ -475,101 +473,57 @@ CREATE INDEX IF NOT EXISTS idx_pending_actions_dispatched
     ON pending_actions(dispatched_at);
 ```
 
-**`daemon/ledger/logger.py` [MODIFY]**
-
-Add methods to manage `pending_actions` and correlate:
+**`daemon/ledger/logger.py`**
+Adds methods to manage `pending_actions` and correlate:
 - `write_pending_action(action_id, dispatched_at, binary, args, pid=None, ttl=60.0)`
 - `update_pending_action_pid(action_id, pid)`
 - `resolve_pending_action(packet_timestamp, window_seconds=5.0)` — returns `action_id` or `None`.
 - `cleanup_pending_actions()`
 
-**`daemon/ipc_listener.py` [NEW]**
+**`daemon/ipc_listener.py`**
+A background thread managing the UDP listener.
+- Binds to `0.0.0.0:5005`.
+- Writes a UUID4 token to `/tmp/warden_ipc/token.txt`.
+- Receives JSON network events.
+- Silently rejects payloads without a matching token.
+- Calls `logger.cleanup_pending_actions()` and `logger.resolve_pending_action(packet_timestamp)`.
+- Reconstructs `LedgerEvent` with the `action_id` and calls `logger.record()`.
 
-A new component that runs a background thread with an `AF_UNIX`, `SOCK_DGRAM` socket.
-- Receives JSON network events from the sidecar.
-- Parses the `packet_timestamp` from the payload.
-- Calls `logger.cleanup_pending_actions()`.
-- Calls `logger.resolve_pending_action(packet_timestamp)`.
-- Updates the network event with `action_id` and calls `logger.record()` to write it to the ledger.
+**`daemon/core.py`**
+- Starts `IPCListener` during `WardenDaemon.__init__` and shuts it down in `.close()`.
+- In `_process_single()`, generates `action_id`, calls `write_pending_action`, executes the subprocess to get the PID, and updates `update_pending_action_pid`.
 
-**`daemon/core.py` [MODIFY]**
+**`daemon/executors/real_executor.py`**
+Surfaces the subprocess PID in `ExecutionResult` using `subprocess.Popen` + `.communicate()`.
 
-- At startup, instantiate and start the `IPCListener`, passing it the `Logger` instance. Ensure it shuts down cleanly on exit.
-- In `_process_single()`, generate `action_id = str(uuid.uuid4())` on ALLOW, call `write_pending_action`, run the subprocess, and call `update_pending_action_pid`. Pass `action_id` into `LedgerEvent`.
+**`sidecar/interceptor.py`**
+- Uses `get_token()` to read the token file.
+- Formats the network event as JSON, includes the token, and sends via `socket.AF_INET`, `SOCK_DGRAM` to `host.docker.internal:5005`.
+- **Crucial Exemption Rule**: Because the sidecar uses `NFQUEUE` on the `OUTPUT` chain, it intercepts *all* outbound traffic, including its own UDP IPC packets. This triggers an infinite interception loop where the sidecar drops its own IPC packets. To fix this, an exemption rule is inserted *before* the NFQUEUE rule:
+  `iptables -I OUTPUT -p udp --dport 5005 -j ACCEPT`
 
-**`daemon/executors/real_executor.py` [MODIFY — minimal]**
-
-Surface the subprocess PID in `ExecutionResult` using `subprocess.Popen` + `.communicate()`.
-
-**`sidecar/interceptor.py` [MODIFY]**
-
-- Remove all `sqlite3` and `logger.py` dependencies.
-- Open a non-blocking `AF_UNIX`, `SOCK_DGRAM` socket to `WARDEN_SOCKET_PATH`.
-- In `packet_callback`, capture `time.time()`, format the network event as JSON, and `sendto()` the Unix socket. If the socket doesn't exist or sending fails (e.g., buffer full), fail open gracefully (drop the log, don't drop the packet).
-
-**`docker-compose.yml` [MODIFY]**
-
-Remove the `warden_ledger` volume. Add a bind-mount for the IPC socket directory:
+**`docker-compose.yml`**
+Removes the `warden_ledger` volume entirely. Adds the IPC bind-mount and network routing parameters:
 ```yaml
     volumes:
       - .:/app:ro
-      - ./ipc_data:/tmp/warden_ipc:rw
+      - ./ipc_data:/tmp/warden_ipc:ro
+    environment:
+      - PYTHONPATH=/app
+      - WARDEN_UDP_HOST=host.docker.internal
+      - WARDEN_UDP_PORT=5005
+      - WARDEN_TOKEN_PATH=/tmp/warden_ipc/token.txt
 ```
-Set `WARDEN_SOCKET_PATH=/tmp/warden_ipc/warden.sock` in the sidecar environment.
-
-##### Testing Plan
-
-A passing Unix Socket IPC fix requires all of the following to be demonstrated:
-
-1. **`pending_actions` row written on real dispatch:** `daemon.process("ls")` -> exactly one row in `pending_actions`.
-2. **Network event gets sent and tagged:** dispatch a real command that makes a network call (e.g. `python3 -c "import urllib.request; urllib.request.urlopen('https://google.com')"`) — ALLOW at shell, BLOCK at network. The network event must arrive in the daemon's DB with an `action_id` matching the shell event.
-3. **No Database Locking/Missing Events:** Run the e2e correlation script 5 times in a row, fresh each time. Verify 5/5 passes with both shell and network events correlated perfectly.
-
-##### Antigravity Prompts — Unix Socket IPC Fix
-
-Use these sequentially. Paste the Shared Context block once at the start of the session.
-
-**Shared Context (paste first, once):**
-```
-I'm building Warden. The fix I'm implementing moves network event logging from the sidecar to the daemon via a Unix Domain Socket (IPC), enforcing a single-writer architecture for the SQLite ledger to avoid macOS Docker Desktop virtiofs mmap incoherence. The sidecar sends JSON network events over the socket. The daemon listens, correlates the event with the originating shell command via a `pending_actions` table, and writes to the ledger.
-
-Key files:
-- daemon/ledger/schema.sql — add pending_actions table
-- daemon/ledger/logger.py — Logger class
-- daemon/core.py — _process_single() is where dispatch happens
-- daemon/executors/real_executor.py — needs PID surfaced
-- sidecar/interceptor.py — packet_callback()
-- daemon/ipc_listener.py — (NEW) background thread for receiving socket events
-- docker-compose.yml — bind-mount the IPC directory
-
-Constraints: shell=False everywhere, never raise in Logger.record() or socket sending.
+To ensure `host.docker.internal` resolves correctly for the sidecar (which shares the jail's network namespace), the `jail` service explicitly configures:
+```yaml
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 ```
 
-**Step 1 — Schema & Logger methods:**
-```
-Update daemon/ledger/schema.sql to add the pending_actions table and idx_pending_actions_dispatched. Add an ALTER TABLE migration guard for action_id in Logger._initialise(). Then, in daemon/ledger/logger.py, add write_pending_action, update_pending_action_pid, resolve_pending_action, and cleanup_pending_actions. Write a unit test verifying they interact correctly.
-```
-
-**Step 2 — Core integration & RealExecutor:**
-```
-In daemon/executors/real_executor.py, modify RealExecutor to use Popen.communicate() and return pid in ExecutionResult. Preserve timeout behavior.
-In daemon/core.py _process_single(), for ALLOW decisions, generate a uuid4, call write_pending_action, execute the subprocess, call update_pending_action_pid, and include the action_id in LedgerEvent.
-```
-
-**Step 3 — IPC Listener:**
-```
-Create daemon/ipc_listener.py containing a background thread that listens on a SOCK_DGRAM Unix socket. When it receives a JSON network event, parse its timestamp, call logger.cleanup_pending_actions(), call logger.resolve_pending_action() to get the action_id, inject the action_id into the event JSON, and call logger._write() to save it to the events table. Start/stop this listener in WardenDaemon's __init__ / close methods.
-```
-
-**Step 4 — Sidecar Refactor:**
-```
-Refactor sidecar/interceptor.py to remove all SQLite/logger dependencies. Instead, it should open a SOCK_DGRAM Unix socket to WARDEN_SOCKET_PATH. In packet_callback, capture time.time(), format the network event as JSON, and send it to the socket. Ensure it fails gracefully if the socket is missing or full. Update docker-compose.yml to bind-mount the IPC directory (./ipc_data:/tmp/warden_ipc:rw) instead of the ledger volume, and set WARDEN_SOCKET_PATH.
-```
-
-**Step 5 — 5x E2E Verification:**
-```
-Update the demo/test_e2e_correlation.py and run_5x_e2e.sh scripts. Run the 5x script to confirm 5/5 passes, proving the IPC architecture completely resolves the virtiofs split-brain issue and reliably correlates events.
-```
+##### Testing Plan (Completed successfully 5/5)
+1. **`pending_actions` row written on real dispatch.**
+2. **Network event gets sent and tagged.**
+3. **No Database Locking/Missing Events:** Verified across 5/5 sequential clean runs.
 
 ---
 
