@@ -11,3 +11,6 @@ design/
 WARDEN_SPEC.md
 WARDEN_BUILD_CONTEXT.md
 WARDEN_UNDERSTANDING_LOG.md
+ledger_data/
+*.db-shm
+*.db-wal
