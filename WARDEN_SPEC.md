@@ -386,18 +386,67 @@ To support hostname rules, the sidecar must implement stateful connection tracki
 
 ---
 
-### 7.4 The Correlation Gap
+### 7.4 The Correlation Gap (and the Two-Ledgers Gap)
 
-The shell daemon and network sidecar are separate processes with no shared context. Neither currently knows which specific shell command caused a given network packet — there is no shared action/session ID linking a Ledger shell event to a Ledger network event.
+#### Background: Two Gaps, Not One
 
-**Why this matters:** Phase 3's advisor needs to trace network outcomes back to the shell command that caused them to reason about patterns accurately. Without this, Phase 3 can only approximate correlation via timestamp proximity, which is unreliable when multiple things happen in the same window.
+When this section was first written, the problem was framed as a single correlation gap: the daemon and sidecar have no shared action/session ID linking a shell event to a network event. Investigation during Phase 3 preparation revealed a second, independent gap sitting underneath it: **the daemon and sidecar have never written to the same SQLite file at all.**
 
-**Possible Fixes (in order of recommendation):**
-1. **RECOMMENDED:** Environment variable tagging — when the daemon dispatches a command for real execution, set an env var (e.g. `WARDEN_ACTION_ID=<uuid>`) on that specific subprocess. The sidecar, when it intercepts a packet, reads the originating process's environment (e.g. via `/proc/<pid>/environ`) to extract the matching ID and logs it alongside the network event. *(Open question: confirm this doesn't conflict with the jail's stripped capabilities `cap_drop: ALL` before implementing.)*
-2. **PID-based correlation** — the daemon logs the PID of the real process it launched; the sidecar looks up which PID owns a given connection via connection-tracking metadata, then joins ledgers on PID + rough timestamp. More robust than tagging but more implementation work.
-3. **FALLBACK ONLY:** Timestamp-window correlation — the heuristic approach used manually during the validation milestone. Fragile, requires no architecture change, acceptable only as a stopgap for early Phase 3 analysis, not a permanent fix.
+The original Phase 2 design intent ("network events log into the existing Ledger schema — no schema migration required") was only partially achieved. The *schema* is shared — both sides use the same `events` table structure. But the *files* are separate:
 
-*State clearly: this gap should be addressed as part of, or before, Phase 3's detection component, since Phase 3's usefulness is directly limited by how reliably it can trace cause and effect in the ledger.*
+- The **daemon** writes shell events to `warden_demo.db` directly on the host filesystem.
+- The **sidecar** writes network events to `/data/ledger/warden.db` inside the `warden_ledger` Docker volume.
+
+These two files have never been mounted in the same place at the same time. The daemon has no access to `warden_ledger`; the sidecar has no access to the host-side `warden_demo.db`. Correlation via ledger JOIN has therefore never been possible — not just unlabeled, but physically impossible across two separate files.
+
+#### Why This Matters for Phase 3
+
+Phase 3's advisor needs to trace network outcomes back to the shell commands that caused them. Without this, it can only analyze shell events or network events in isolation — it cannot answer "this binary consistently makes network calls to this class of IP" as a compound pattern, which is the core of what makes Phase 3 useful. The two-ledgers gap must be closed as a prerequisite to Phase 3, independent of the correlation fix below.
+
+#### Approaches Investigated (with Outcomes)
+
+**RULED OUT — Environment variable tagging via `/proc/<pid>/environ`:**
+
+The original recommended approach: when the daemon dispatches a command, set `WARDEN_ACTION_ID=<uuid>` as an env var on the subprocess; the sidecar reads `/proc/<pid>/environ` of the originating process to extract the ID. Tested directly against the live stack. Result: not viable. The jail and sidecar are in separate PID namespaces. The sidecar's `/proc` filesystem only exposes its own processes — jail PIDs simply do not appear there at all (`No such file or directory`). No capability grant fixes this; separate PID namespaces are a hard boundary regardless of `CAP_NET_ADMIN` or `CAP_SYS_PTRACE`.
+
+**RULED OUT — PID-based correlation:**
+
+The daemon logs the PID of the real subprocess; the sidecar looks up which PID owns a given TCP connection via conntrack metadata, then joins on PID + timestamp. Ruled out for the same reason: the sidecar cannot see jail PIDs in its `/proc`. PID ownership lookup requires visibility into the PID namespace of the process owning the socket — which the sidecar does not have.
+
+**FALLBACK ONLY — Timestamp-window correlation:**
+
+Heuristically matching shell events to network events by overlapping time windows. Used manually during the validation milestone. Fragile (breaks when multiple things happen concurrently), requires querying two separate files, and offers no causal precision. Acceptable only as a temporary stopgap before the fix below is implemented.
+
+#### RECOMMENDED FIX — Shared-Volume `pending_actions` + Ledger Unification
+
+This is a compound fix addressing both gaps simultaneously. It requires no cross-namespace process visibility; everything operates through the `warden_ledger` Docker volume that the sidecar already has full read-write access to.
+
+**Part 1 — `pending_actions` table (solves correlation):**
+
+When the daemon dispatches a command for real execution, it writes one row to a `pending_actions` table in the shared volume's SQLite file immediately before `subprocess.Popen` returns:
+
+```sql
+CREATE TABLE pending_actions (
+    action_id    TEXT PRIMARY KEY,
+    dispatched_at REAL NOT NULL,   -- unix timestamp, millisecond precision
+    binary       TEXT,
+    args         TEXT,             -- JSON-serialized argv
+    pid          INTEGER,          -- subprocess PID, set after Popen returns
+    expires_at   REAL NOT NULL     -- dispatched_at + TTL (e.g. 60s)
+);
+```
+
+When the sidecar intercepts a packet, it queries `pending_actions` for rows where `dispatched_at` is within ±N seconds of the packet timestamp and `expires_at` has not passed. The sidecar tags the network event it writes with the matched `action_id`. Both sides GC expired rows at write time. This is sub-second timestamp matching between two cooperating processes on the same file — a completely different reliability class from cross-file human eyeballing.
+
+**Part 2 — Ledger unification (solves the two-ledgers gap):**
+
+Route the daemon's main shell event writes to the shared `warden_ledger` volume instead of the host-side `warden_demo.db`. This gives Phase 3 a single SQLite file containing all events (shell and network), linked by `action_id`, queryable with a plain JOIN. This is the original Phase 2 design intent, finally realized.
+
+These two parts should be implemented together — the daemon already needs a write path to the shared volume for `pending_actions`, so routing its main ledger writes there is a small incremental step with high Phase 3 payoff.
+
+*Open question: confirm whether the daemon running on the host can reliably write to `warden_ledger` (a Docker-managed named volume) without going through docker-compose — or whether the cleanest path is to move daemon execution inside a container with the volume mounted. Do not resolve this now; it is a sequencing decision for when Phase 3 component work begins.*
+
+*This compound fix should be addressed as part of, or before, Phase 3's detection component. Phase 3's usefulness as an advisor is directly limited by how reliably it can trace cause and effect across both event types in a single place.*
 
 ---
 
