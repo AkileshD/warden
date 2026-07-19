@@ -58,6 +58,7 @@ class LedgerEvent:
     event_type: str = "shell_command"
     session_id: Optional[str] = None
     risk: Optional[str] = None
+    action_id: Optional[str] = None  # Set for ALLOW-dispatched shell events; matched by sidecar for network events
 
     @property
     def timestamp(self) -> str:
@@ -157,7 +158,17 @@ class Logger:
     # ------------------------------------------------------------------
 
     def _initialise(self) -> None:
-        """Create the DB and apply the schema if not already present."""
+        """Create the DB and apply the schema if not already present.
+
+        WHY the ALTER TABLE guard exists:
+          `CREATE TABLE IF NOT EXISTS` is safe and idempotent for new tables.
+          However, it does NOT add new columns to an already-existing table —
+          the `action_id` column added to the `events` table in the Phase 3
+          compound fix must be applied to databases created before this change
+          via an explicit `ALTER TABLE ... ADD COLUMN`. The guard below checks
+          for the column's existence and applies the migration only when needed,
+          making _initialise() safe to call on both new and existing databases.
+        """
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
         schema_path = Path(__file__).parent / "schema.sql"
@@ -169,7 +180,15 @@ class Logger:
         with self._lock:
             conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")  # WHY WAL: better concurrent read performance
+            conn.execute("PRAGMA busy_timeout=5000")  # WHY: prevents SQLITE_BUSY when daemon+sidecar write concurrently
             conn.executescript(schema_sql)
+
+            # Migration guard: add action_id column to events if it doesn't exist yet.
+            # Required for databases created before the Phase 3 compound fix.
+            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+            if "action_id" not in existing_cols:
+                conn.execute("ALTER TABLE events ADD COLUMN action_id TEXT")
+
             conn.commit()
             self._conn = conn
 
@@ -185,9 +204,9 @@ class Logger:
         sql = """
         INSERT INTO events
             (timestamp, session_id, raw_input, parsed_action, event_type,
-             verdict, reason, risk, execution, output)
+             verdict, reason, risk, execution, output, action_id)
         VALUES
-            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             event.timestamp,
@@ -200,6 +219,7 @@ class Logger:
             event.risk,
             execution_str,
             output_json,
+            event.action_id,
         )
 
         with self._lock:
@@ -223,3 +243,101 @@ class Logger:
             )
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Pending-actions correlation (Phase 3 compound fix)
+    # ------------------------------------------------------------------
+
+    def write_pending_action(
+        self,
+        action_id: str,
+        dispatched_at: float,
+        binary: str,
+        args: str,          # JSON-serialized list
+        pid: Optional[int] = None,
+        ttl: float = 60.0,
+    ) -> None:
+        """Write a pending-action row immediately before a real subprocess is launched.
+
+        Called by core.py for ALLOW-dispatched commands only. Never raises.
+        """
+        import time as _time  # local import avoids adding a module-level dep for a narrow feature
+        try:
+            expires_at = dispatched_at + ttl
+            with self._lock:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO pending_actions "
+                    "(action_id, dispatched_at, binary, args, pid, expires_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (action_id, dispatched_at, binary, args, pid, expires_at),
+                )
+                self._conn.commit()
+        except Exception as e:
+            import sys
+            print(f"[warden:logger] ERROR writing pending_action: {e}", file=sys.stderr)
+
+    def update_pending_action_pid(self, action_id: str, pid: int) -> None:
+        """Update the pid field on an existing pending_actions row.
+
+        Called by core.py after Popen returns and the subprocess PID is known.
+        Never raises.
+        """
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE pending_actions SET pid = ? WHERE action_id = ?",
+                    (pid, action_id),
+                )
+                self._conn.commit()
+        except Exception as e:
+            import sys
+            print(f"[warden:logger] ERROR updating pending_action pid: {e}", file=sys.stderr)
+
+    def resolve_pending_action(
+        self,
+        packet_timestamp: float,
+        window_seconds: float = 5.0,
+    ) -> Optional[str]:
+        """Return the action_id of the best-matching pending action for a packet.
+
+        Queries for rows where dispatched_at is within ±window_seconds of
+        packet_timestamp, not yet expired, ordered by closest timestamp.
+        Returns None if no match — callers treat this as an unlinked event.
+        Never raises.
+        """
+        import time as _time
+        try:
+            now = _time.time()
+            lo = packet_timestamp - window_seconds
+            hi = packet_timestamp + window_seconds
+            with self._lock:
+                cursor = self._conn.execute(
+                    "SELECT action_id FROM pending_actions "
+                    "WHERE dispatched_at BETWEEN ? AND ? AND expires_at > ? "
+                    "ORDER BY ABS(dispatched_at - ?) ASC LIMIT 1",
+                    (lo, hi, now, packet_timestamp),
+                )
+                row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            import sys
+            print(f"[warden:logger] ERROR resolving pending_action: {e}", file=sys.stderr)
+            return None
+
+    def cleanup_pending_actions(self) -> None:
+        """Delete expired pending_actions rows (expires_at < now).
+
+        Called by the sidecar on every packet arrival as a cheap GC step.
+        Runs under lock. Never raises.
+        """
+        import time as _time
+        try:
+            now = _time.time()
+            with self._lock:
+                self._conn.execute(
+                    "DELETE FROM pending_actions WHERE expires_at < ?", (now,)
+                )
+                self._conn.commit()
+        except Exception as e:
+            import sys
+            print(f"[warden:logger] ERROR cleaning up pending_actions: {e}", file=sys.stderr)

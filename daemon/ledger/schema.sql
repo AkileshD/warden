@@ -34,7 +34,10 @@ CREATE TABLE IF NOT EXISTS events (
 
     -- Execution outcome
     execution       TEXT    NOT NULL,           -- "real" | "fake" | "none" (if error before exec)
-    output          TEXT                        -- JSON: {"stdout": "...", "stderr": "...", "exit_code": 0}
+    output          TEXT,                       -- JSON: {"stdout": "...", "stderr": "...", "exit_code": 0}
+
+    -- Correlation (Phase 3 compound fix)
+    action_id       TEXT                        -- UUID matching a pending_actions row; NULL for pre-fix rows and unmatched network events
 );
 
 -- Index for time-range queries (dashboard live view, Phase 4)
@@ -45,3 +48,30 @@ CREATE INDEX IF NOT EXISTS idx_events_verdict ON events(verdict);
 
 -- Index for session grouping (Phase 2+)
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
+
+-- ── pending_actions ──────────────────────────────────────────────────────────
+-- Correlation table written by the daemon at real-dispatch time and read by
+-- the network sidecar when a packet arrives.
+--
+-- WHY a separate table (not a column on events): pending_actions rows are
+-- short-lived (TTL ~60s) and written BEFORE the final LedgerEvent row exists.
+-- The daemon writes here at Popen time; the sidecar reads and GC-cleans here
+-- independently. Mixing this into `events` would complicate the append-only
+-- audit-log contract. Expired rows are deleted by the sidecar on each packet.
+--
+-- WHY REAL for dispatched_at / expires_at: SQLite stores these as float seconds
+-- since Unix epoch, giving millisecond precision without a text-parsing round-
+-- trip. Compared using plain arithmetic in the sidecar's resolve query.
+
+CREATE TABLE IF NOT EXISTS pending_actions (
+    action_id     TEXT PRIMARY KEY,
+    dispatched_at REAL NOT NULL,   -- time.time() at Popen call, millisecond precision
+    binary        TEXT NOT NULL,
+    args          TEXT NOT NULL,   -- JSON-serialized list, e.g. '["ls", "./project"]'
+    pid           INTEGER,         -- subprocess PID; set after Popen returns (may be NULL)
+    expires_at    REAL NOT NULL    -- dispatched_at + TTL_SECONDS (default 60.0)
+);
+
+-- Index for the sidecar's time-window query (dispatched_at BETWEEN lo AND hi)
+CREATE INDEX IF NOT EXISTS idx_pending_actions_dispatched
+    ON pending_actions(dispatched_at);
