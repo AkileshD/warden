@@ -446,7 +446,217 @@ These two parts should be implemented together — the daemon already needs a wr
 
 *Open question: confirm whether the daemon running on the host can reliably write to `warden_ledger` (a Docker-managed named volume) without going through docker-compose — or whether the cleanest path is to move daemon execution inside a container with the volume mounted. Do not resolve this now; it is a sequencing decision for when Phase 3 component work begins.*
 
-*This compound fix should be addressed as part of, or before, Phase 3's detection component. Phase 3's usefulness as an advisor is directly limited by how reliably it can trace cause and effect across both event types in a single place.*
+#### Implementation Breakdown — Compound Fix
+
+This subsection contains the component-level detail and sequenced Antigravity prompts for building the compound fix. **Do not execute any of these steps until this plan is approved.**
+
+##### Volume Access: How the Daemon Gets a Write Path to `warden_ledger`
+
+The daemon currently runs on the **host** and writes to `warden_demo.db` in the project root — a plain host-filesystem path. The `warden_ledger` Docker volume is managed by Docker and lives at `/var/lib/docker/volumes/warden_warden_ledger/_data` on the Linux VM inside Docker Desktop — it is **not directly accessible as a host path on macOS**.
+
+Resolution: mount the `warden_ledger` volume into the `warden-sidecar` container (already done) **and** additionally mount it into a new optional `warden-daemon` service in `docker-compose.yml`, or alternatively expose the volume's Linux-VM path to the host daemon via an explicit volume bind. The recommended path: **add a `WARDEN_LEDGER_PATH` environment variable to the daemon's startup** (mirroring how the sidecar already uses `WARDEN_LEDGER_PATH=/data/ledger/warden.db`). The demo scripts that instantiate `WardenDaemon` pass this path explicitly. In development (host-only, no Docker), the daemon continues writing to the local `warden_demo.db` as before. When running in the full docker-compose stack, it receives a path inside the mounted volume.
+
+*Open question resolved here: the daemon does NOT need to move into a container. The `warden_ledger` volume can be bind-mounted to a known host-accessible directory (e.g. `./ledger_data:/data/ledger:rw` added to docker-compose.yml as a second mount point), making it reachable by both the host-side daemon and the sidecar container under the same content path.*
+
+##### Component Breakdown
+
+**`daemon/ledger/schema.sql` [MODIFY]**
+
+Add the `pending_actions` table. Because the schema already uses `CREATE TABLE IF NOT EXISTS`, adding the new table to `schema.sql` is safe and non-destructive — `Logger._initialise()` calls `executescript(schema_sql)` on startup, which will create the new table if it doesn't exist and leave existing `events` rows completely untouched. No migration strategy, no version bump required. Historical data in `warden_demo.db` is unaffected; the new table simply doesn't exist there until the daemon next opens it.
+
+```sql
+CREATE TABLE IF NOT EXISTS pending_actions (
+    action_id     TEXT PRIMARY KEY,
+    dispatched_at REAL NOT NULL,   -- Unix timestamp, float, millisecond precision
+    binary        TEXT NOT NULL,
+    args          TEXT NOT NULL,   -- JSON-serialized list
+    pid           INTEGER,         -- Set after Popen returns; NULL if cd (no subprocess)
+    expires_at    REAL NOT NULL    -- dispatched_at + TTL_SECONDS (e.g. 60.0)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_actions_dispatched
+    ON pending_actions(dispatched_at);
+```
+
+**`daemon/ledger/logger.py` [MODIFY]**
+
+Add four new methods to `Logger`:
+
+- `write_pending_action(action_id, dispatched_at, binary, args, pid=None, ttl=60.0)` — inserts a row into `pending_actions`. Called by `core.py` at the moment of real dispatch.
+- `update_pending_action_pid(action_id, pid)` — `UPDATE pending_actions SET pid=? WHERE action_id=?`. Called by `core.py` after `Popen` returns the PID. Separate from `write_pending_action` because the PID is only available after the process has started.
+- `resolve_pending_action(packet_timestamp, window_seconds=5.0)` — queries `pending_actions` for the best matching row within `±window_seconds` of `packet_timestamp`, filters `expires_at > now`, returns the `action_id` or `None`. Called by `sidecar/interceptor.py`.
+- `cleanup_pending_actions()` — deletes all rows where `expires_at < now`. Called by `interceptor.py` on every packet arrival as a cheap GC step (SQLite `DELETE WHERE` is fast on a small, indexed table).
+
+No changes to `Logger.record()`, `LedgerEvent`, or the `events` table itself.
+
+**Concurrency — WAL mode with two writers on the same file:**
+
+SQLite WAL mode supports **multiple concurrent readers and one writer at a time**. When a second writer tries to write while one is active, it waits on a short write-lock (default 5 seconds before returning `SQLITE_BUSY`). The daemon and sidecar will interleave writes infrequently (one daemon write per real dispatch, one sidecar write per intercepted packet), and their write windows are short (a single `INSERT` or `DELETE`). This is well within WAL mode's design envelope. Both processes access the file through the same underlying path (the Docker volume), so there are no two-mount-context coherency issues — it is one file on one Linux filesystem, seen through one kernel. The daemon must open the connection with `timeout=5` (SQLite's busy timeout) to handle the rare case of simultaneous writes gracefully.
+
+**`daemon/core.py` [MODIFY]**
+
+In `_process_single()`, at Stage 4 (Execute), the dispatch point splits for real vs. fake:
+- For `Decision.ALLOW` (real execution path), immediately before calling `executor.run()`: generate `action_id = str(uuid.uuid4())`, call `self._logger.write_pending_action(...)` with `pid=None` initially.
+- After `executor.run()` returns: if the executor exposes a `pid` (RealExecutor will need to surface the subprocess PID through `ExecutionResult`), call a second `logger.update_pending_action_pid(action_id, pid)`. *This is a nice-to-have for debugging; the core correlation works on timestamp alone if PID is not populated.*
+- For `Decision.BLOCK`/`FLAG` (fake execution): no `pending_actions` write — fabricated commands never make real network calls.
+- The `action_id` is also stored in `LedgerEvent` as part of the shell event row so the JOIN works: add `action_id TEXT` column to the `events` table (NULL for network events that couldn't be correlated, and for all pre-fix historical rows).
+
+**`daemon/executors/real_executor.py` [MODIFY — minimal]**
+
+Surface the subprocess PID in `ExecutionResult` so `core.py` can update the `pending_actions` row. `subprocess.run()` does not expose PID after completion; switch to `subprocess.Popen` + `.communicate()` to get `.pid` before waiting. `ExecutionResult` gains an optional `pid: Optional[int] = None` field. The existing timeout/capture behavior is preserved.
+
+**`sidecar/interceptor.py` [MODIFY]**
+
+In `packet_callback`, after step 3 (Evaluate) and before step 4 (Log):
+- Call `logger.cleanup_pending_actions()` — cheap, runs on every packet.
+- Call `action_id = logger.resolve_pending_action(packet_timestamp)` where `packet_timestamp` is `time.time()` at the moment the packet arrives.
+- Pass `action_id` (may be `None`) into `LedgerEvent` via a new optional field.
+
+`LedgerEvent` gains `action_id: Optional[str] = None`. The `events` INSERT in `logger._write()` includes it.
+
+**`docker-compose.yml` [MODIFY]**
+
+Add a bind-mount that makes the `warden_ledger` volume accessible at a known host path (e.g. `./ledger_data`), so the host-side daemon can write to it:
+
+```yaml
+volumes:
+  warden_ledger:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./ledger_data   # host directory, created on first docker-compose up
+```
+
+Or simpler: add `- ./ledger_data:/data/ledger:rw` as a bind-mount alongside the named volume in both the sidecar and any new daemon container. The daemon startup script passes `ledger_path=Path("./ledger_data/warden.db")` when running in full-stack mode.
+
+##### Testing Plan
+
+A passing compound fix requires all of the following to be demonstrated:
+
+1. **`pending_actions` row written on real dispatch:** run `daemon.process("ls ./project")` (ALLOW-scoped), then query `pending_actions` — exactly one row exists with the correct `binary`, `dispatched_at`, and a non-null `pid`.
+2. **No `pending_actions` row on fake dispatch:** run `daemon.process("rm -rf /")` (BLOCK-scoped), confirm no row in `pending_actions`.
+3. **Network event gets tagged:** with the daemon and sidecar running together, dispatch a real command that makes a network call (e.g. `python3 -c "import urllib.request; urllib.request.urlopen('https://google.com')"`) — ALLOW at the shell level, BLOCK at the network level. The resulting network event row in `events` must have a non-null `action_id` matching the shell event's `action_id`.
+4. **JOIN query returns coherent result:** a single SQL query joining `events` on `action_id` returns one shell event row and one (or more, for retries) network event rows for the same dispatch. No cross-join pollution from other concurrent actions.
+5. **Historical data unaffected:** all pre-fix rows in the `events` table survive `Logger._initialise()` being called on the same database (i.e., `CREATE TABLE IF NOT EXISTS` doesn't truncate); their `action_id` column is NULL, which is acceptable.
+6. **WAL concurrency holds:** run the daemon and sidecar simultaneously for 60 seconds with a rapid-fire loop of real dispatches; confirm no `SQLITE_BUSY` errors logged to stderr on either side.
+
+##### Antigravity Prompts — Compound Fix
+
+Use these sequentially. Paste the Shared Context block once at the start of the session.
+
+**Shared Context (paste first, once):**
+```
+I'm building Warden. The compound fix I'm implementing adds a `pending_actions`
+table to the shared SQLite ledger so the network sidecar can correlate intercepted
+packets back to the specific shell command that caused them (action_id), and routes
+the daemon's main event writes to the same Docker-managed `warden_ledger` volume
+used by the sidecar. Current state: daemon writes to warden_demo.db on the host;
+sidecar writes to /data/ledger/warden.db in the warden_ledger Docker volume —
+they have never shared one file.
+
+Key files:
+- daemon/ledger/schema.sql — existing events table (CREATE TABLE IF NOT EXISTS, safe to add new tables)
+- daemon/ledger/logger.py — Logger class, _initialise() runs schema.sql at startup
+- daemon/core.py — _process_single() is where dispatch happens (Stage 4)
+- daemon/executors/real_executor.py — uses subprocess.run(); needs PID surfaced
+- sidecar/interceptor.py — packet_callback() is where network events are logged
+- docker-compose.yml — warden_ledger is a named Docker volume, sidecar mounts it at /data/ledger
+
+Constraints: shell=False everywhere, WAL mode already enabled, never raises in
+Logger.record(), LedgerEvent is a dataclass that maps 1-to-1 to an events row.
+```
+
+**Step 1 — Schema:**
+```
+Add the `pending_actions` table to daemon/ledger/schema.sql. It needs:
+action_id (TEXT PRIMARY KEY), dispatched_at (REAL, unix float, ms precision),
+binary (TEXT NOT NULL), args (TEXT NOT NULL, JSON list), pid (INTEGER, nullable),
+expires_at (REAL NOT NULL). Add a dispatched_at index. Also add an action_id TEXT
+nullable column to the existing events table (ALTER TABLE events ADD COLUMN if it
+doesn't exist, or add it to the CREATE TABLE IF NOT EXISTS — note: IF NOT EXISTS
+won't add new columns to an already-created table, so this needs an ALTER TABLE
+migration guard in Logger._initialise()). Write a test confirming: (a) calling
+_initialise() twice on the same DB does not error; (b) pending_actions table is
+created; (c) events table has an action_id column.
+```
+
+**Step 2 — Logger methods:**
+```
+Add three methods to Logger in daemon/ledger/logger.py:
+1. write_pending_action(action_id, dispatched_at, binary, args, pid=None, ttl=60.0)
+   — inserts into pending_actions; expires_at = dispatched_at + ttl.
+2. update_pending_action_pid(action_id, pid) — UPDATE pending_actions SET pid=?
+   WHERE action_id=?. Separate from write because PID is only available after
+   Popen returns.
+3. resolve_pending_action(packet_timestamp, window_seconds=5.0) -> Optional[str]
+   — SELECT action_id FROM pending_actions WHERE dispatched_at BETWEEN
+   (packet_timestamp - window_seconds) AND (packet_timestamp + window_seconds)
+   AND expires_at > now ORDER BY ABS(dispatched_at - packet_timestamp) ASC LIMIT 1.
+   Returns action_id or None.
+4. cleanup_pending_actions() — DELETE FROM pending_actions WHERE expires_at < now.
+All under self._lock. Never raises. Write unit tests for each covering: hit, miss,
+expiry, and concurrent write (open two Logger instances on the same file and call
+write + resolve simultaneously).
+```
+
+**Step 3 — RealExecutor PID surfacing:**
+```
+In daemon/executors/real_executor.py, switch from subprocess.run() to
+subprocess.Popen() + .communicate() so the subprocess PID is available before
+waiting for completion. Add pid: Optional[int] = None to ExecutionResult in
+daemon/executors/base.py. RealExecutor.run() sets result.pid = proc.pid.
+Preserve all existing timeout behavior (use Popen.communicate(timeout=30), catch
+TimeoutExpired, call proc.kill() + proc.communicate() on timeout).
+Confirm existing tests still pass — no behavior change, only PID surfacing.
+```
+
+**Step 4 — core.py dispatch integration:**
+```
+In daemon/core.py _process_single(), at Stage 4 for ALLOW decisions (non-cd path):
+1. Before executor.run(): action_id = str(uuid.uuid4()); call
+   self._logger.write_pending_action(action_id, time.time(), action.binary,
+   json.dumps(action.args)).
+2. After executor.run(): if execution_result.pid: call
+   self._logger.update_pending_action_pid(action_id, execution_result.pid).
+3. Pass action_id to LedgerEvent (add action_id field to LedgerEvent dataclass
+   and to the events INSERT in logger._write()). For non-ALLOW paths, action_id=None.
+Write a test: dispatch an ALLOW command, query pending_actions, assert the row
+exists with correct fields. Dispatch a BLOCK command, assert no row in pending_actions.
+```
+
+**Step 5 — interceptor.py correlation:**
+```
+In sidecar/interceptor.py packet_callback(), between step 3 (Evaluate) and step 4
+(Log):
+1. import time at the top of the file.
+2. packet_ts = time.time() immediately on packet arrival (before parse).
+3. After evaluate: logger.cleanup_pending_actions(); action_id =
+   logger.resolve_pending_action(packet_ts).
+4. Pass action_id to LedgerEvent (action_id=action_id or None).
+Write a test using a MockLogger that records write_pending_action and
+resolve_pending_action calls, confirming: (a) cleanup is called on every packet;
+(b) action_id from resolve is passed into LedgerEvent; (c) None is handled
+gracefully (no crash, network event still logged with action_id=null).
+```
+
+**Step 6 — Volume access + end-to-end verification:**
+```
+Update docker-compose.yml to make the warden_ledger volume accessible at a
+known host path (./ledger_data) so the host-side daemon can write to it.
+Update demo/run_agent_test.py (and any other daemon startup scripts) to accept
+a WARDEN_LEDGER_PATH environment variable and pass it as ledger_path to
+WardenDaemon — defaulting to ./warden_demo.db if unset (preserves existing
+behaviour). Then run the full end-to-end test: docker-compose up, dispatch one
+real ALLOW command that makes a network call (use the existing run_agent_test.py
+pattern), then run this verification query against the shared ledger:
+  SELECT s.id, s.raw_input, s.verdict, n.raw_input, n.verdict, s.action_id
+  FROM events s JOIN events n ON s.action_id = n.action_id
+  WHERE s.event_type='shell_command' AND n.event_type='network'
+  ORDER BY s.id;
+Assert: at least one row returned with matching action_id, correct verdicts
+(ALLOW for shell, BLOCK for network). All existing pytest tests must still pass.
+```
 
 ---
 
