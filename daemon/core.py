@@ -44,6 +44,7 @@ from .executors.base import Executor, ExecutionResult
 from .executors.real_executor import RealExecutor
 from .executors.fake_executor import FakeExecutor
 from .ledger.logger import Logger, LedgerEvent
+from .ipc_listener import IPCListener
 
 
 @dataclass
@@ -119,6 +120,10 @@ class WardenDaemon:
         self._real_executor = RealExecutor(work_dir=self._work_dir)
         self._fake_executor = FakeExecutor()
         self._logger = Logger(ledger_path)
+        
+        # Start the IPC listener for network events from the sidecar
+        self._ipc_listener = IPCListener(logger=self._logger)
+        self._ipc_listener.start()
 
     # ------------------------------------------------------------------
     # Public API
@@ -189,7 +194,8 @@ class WardenDaemon:
         ]
 
     def close(self) -> None:
-        """Clean shutdown — close database connections."""
+        """Clean shutdown — close database connections and stop threads."""
+        self._ipc_listener.stop()
         self._logger.close()
 
     # ------------------------------------------------------------------
