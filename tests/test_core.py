@@ -213,3 +213,89 @@ def test_daemon_cd_then_cat_nested_chain(nested_chain_env):
 
     daemon.close()
 
+
+# ── Step 4: Correlation Dispatch Integration ──────────────────────────
+
+def test_dispatch_allow_writes_pending_action(temp_env):
+    """An ALLOW'd command writes to pending_actions and links the events row."""
+    import sqlite3
+    import json
+    tdp, policy_path, ledger_path, work_dir = temp_env
+    # Update policy to allow echo
+    policy = {
+        "default_action": "flag",
+        "rules": [
+            {"action": "allow", "binary": "echo", "target_path": "**"}
+        ]
+    }
+    import yaml
+    with open(policy_path, "w") as f:
+        yaml.dump(policy, f)
+
+    daemon = WardenDaemon(policy_path=policy_path, ledger_path=ledger_path, work_dir=work_dir)
+    res = daemon.process("echo hello")
+    assert res.exit_code == 0
+
+    conn = sqlite3.connect(str(ledger_path))
+    
+    # 1. pending_actions should have 1 row
+    pending = conn.execute("SELECT action_id, binary, args, pid FROM pending_actions").fetchall()
+    assert len(pending) == 1
+    action_id, binary, args_json, pid = pending[0]
+    assert binary == "echo"
+    assert json.loads(args_json) == ["hello"]
+    assert pid is not None and pid > 0
+
+    # 2. events row should have the matching action_id
+    event_action_id = conn.execute("SELECT action_id FROM events").fetchone()[0]
+    assert event_action_id == action_id
+
+    conn.close()
+    daemon.close()
+
+def test_dispatch_block_does_not_write_pending_action(temp_env):
+    """A BLOCK'd command (fake execution) does not create a pending_actions row."""
+    import sqlite3
+    import yaml
+    tdp, policy_path, ledger_path, work_dir = temp_env
+    policy = {
+        "default_action": "flag",
+        "rules": [
+            {"action": "block", "binary": "rm", "target_path": "**"}
+        ]
+    }
+    with open(policy_path, "w") as f:
+        yaml.dump(policy, f)
+
+    daemon = WardenDaemon(policy_path=policy_path, ledger_path=ledger_path, work_dir=work_dir)
+    res = daemon.process("rm -rf /")
+    assert res.exit_code == 0  # Fake executor
+
+    conn = sqlite3.connect(str(ledger_path))
+    pending_count = conn.execute("SELECT COUNT(*) FROM pending_actions").fetchone()[0]
+    assert pending_count == 0
+
+    event_action_id = conn.execute("SELECT action_id FROM events").fetchone()[0]
+    assert event_action_id is None
+
+    conn.close()
+    daemon.close()
+
+def test_dispatch_cd_does_not_write_pending_action(temp_env):
+    """An ALLOW'd cd command (internal state update) does not create a pending_actions row."""
+    import sqlite3
+    tdp, policy_path, ledger_path, work_dir = temp_env
+    # The fixture already allows 'cd'
+
+    daemon = WardenDaemon(policy_path=policy_path, ledger_path=ledger_path, work_dir=work_dir)
+    daemon.process("cd /")
+
+    conn = sqlite3.connect(str(ledger_path))
+    pending_count = conn.execute("SELECT COUNT(*) FROM pending_actions").fetchone()[0]
+    assert pending_count == 0
+
+    event_action_id = conn.execute("SELECT action_id FROM events").fetchone()[0]
+    assert event_action_id is None
+
+    conn.close()
+    daemon.close()

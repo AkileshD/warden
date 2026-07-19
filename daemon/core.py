@@ -28,7 +28,10 @@ WHY all five stages are in one method (process()): the pipeline is sequential
 
 from __future__ import annotations
 
+import json
 import sys
+import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -208,6 +211,7 @@ class WardenDaemon:
         # ── Stage 4: Execute (real or fake) ──────────────────────────
         # CONTRACT: this is the ONLY place where executor selection happens.
         # ALLOW → real. BLOCK or FLAG → fake. No exceptions, no special cases.
+        action_id = None
         if action.binary == "cd" and final_verdict.decision == Decision.ALLOW:
             # cd is a shell built-in; it cannot be executed by subprocess/docker-compose exec
             # We must handle it as a pure internal state update.
@@ -231,8 +235,20 @@ class WardenDaemon:
                     stdout="", stderr=f"cd: {new_dir_str}: No such file or directory", exit_code=1, was_real=True, was_fabricated=False
                 )
         else:
+            if final_verdict.decision == Decision.ALLOW:
+                action_id = str(uuid.uuid4())
+                self._logger.write_pending_action(
+                    action_id=action_id,
+                    dispatched_at=time.time(),
+                    binary=action.binary,
+                    args=json.dumps(action.args),
+                )
+
             executor = self._select_executor(final_verdict.decision)
             execution_result = executor.run(action, final_verdict)
+
+            if action_id and execution_result.pid:
+                self._logger.update_pending_action_pid(action_id, execution_result.pid)
 
         # ── Stage 5: Log ─────────────────────────────────────────────
         ledger_event = LedgerEvent(
@@ -243,6 +259,7 @@ class WardenDaemon:
             event_type="shell_command",
             session_id=self._session_id,
             risk=self._extract_risk(final_verdict),
+            action_id=action_id,
         )
         self._logger.record(ledger_event)
 
