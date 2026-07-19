@@ -238,8 +238,7 @@ class Logger:
         """
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT id, timestamp, raw_input, verdict, reason, execution, output "
-                "FROM events ORDER BY id ASC"
+                "SELECT * FROM events ORDER BY id ASC"
             )
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, row)) for row in cursor.fetchall()]

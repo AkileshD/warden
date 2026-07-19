@@ -1,6 +1,8 @@
 import json
 import socket
 import threading
+import uuid
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -12,16 +14,27 @@ from daemon.executors.base import ExecutionResult
 
 class IPCListener:
     """
-    Background thread that listens on a Unix Domain Socket for network events
+    Background thread that listens on a UDP socket for network events
     from the sidecar. It correlates the event with pending actions and writes
-    it directly to the ledger.
+    it directly to the ledger. Uses a pre-shared token for basic authentication.
     """
-    def __init__(self, logger: Logger, socket_path: str = "/tmp/warden_ipc/warden.sock"):
+    def __init__(self, logger: Logger, host: str = "0.0.0.0", port: int = 5005, token_path: str = "/tmp/warden_ipc/token.txt"):
         self._logger = logger
-        self._socket_path = Path(socket_path)
+        self._host = host
+        self._port = port
+        self._token_path = Path(token_path)
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        
+        # Generate and save pre-shared token
+        self._token = uuid.uuid4().hex
+        try:
+            self._token_path.parent.mkdir(parents=True, exist_ok=True)
+            self._token_path.write_text(self._token)
+            self._token_path.chmod(0o644)
+        except Exception as e:
+            print(f"[IPCListener] Warning: Failed to write token file {self._token_path}: {e}", file=sys.stderr)
 
     def start(self) -> None:
         if self._running:
@@ -37,31 +50,27 @@ class IPCListener:
         if self._sock:
             try:
                 # Send a dummy packet to wake up recvfrom if it's blocking
-                s = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                s.sendto(b"{}", str(self._socket_path))
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.sendto(b"{}", ("127.0.0.1", self._port))
                 s.close()
             except Exception:
                 pass
         if self._thread:
             self._thread.join(timeout=1.0)
             self._thread = None
+        # Clean up token file
+        try:
+            if self._token_path.exists():
+                self._token_path.unlink()
+        except OSError:
+            pass
 
     def _run(self) -> None:
-        self._socket_path.parent.mkdir(parents=True, exist_ok=True)
-        if self._socket_path.exists():
-            try:
-                self._socket_path.unlink()
-            except OSError:
-                pass
-
         try:
-            self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-            self._sock.bind(str(self._socket_path))
-            # Ensure the sidecar container can write to this socket if bind mounted
-            self._socket_path.chmod(0o666)
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._sock.bind((self._host, self._port))
         except Exception as e:
-            import sys
-            print(f"[IPCListener] Failed to bind socket {self._socket_path}: {e}", file=sys.stderr)
+            print(f"[IPCListener] Failed to bind UDP socket {self._host}:{self._port}: {e}", file=sys.stderr)
             self._running = False
             return
 
@@ -73,8 +82,13 @@ class IPCListener:
                 
                 event_dict = json.loads(data.decode("utf-8"))
                 if not isinstance(event_dict, dict):
-                    import sys
                     print(f"[IPCListener] Error parsing network event: Expected dict, got {type(event_dict).__name__}", file=sys.stderr)
+                    continue
+
+                # Verify token
+                received_token = event_dict.get("token")
+                if received_token != self._token:
+                    # Silently reject unauthorized payloads (can add trace debug log later if needed)
                     continue
 
                 # 1. GC old pending actions
@@ -133,10 +147,8 @@ class IPCListener:
                 self._logger.record(ledger_event)
 
             except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-                import sys
                 print(f"[IPCListener] Error parsing network event: {e}", file=sys.stderr)
             except Exception as e:
-                import sys
                 print(f"[IPCListener] Unexpected error processing network event: {e}", file=sys.stderr)
             except OSError:
                 if not self._running:
@@ -145,8 +157,3 @@ class IPCListener:
         if self._sock:
             self._sock.close()
             self._sock = None
-        if self._socket_path.exists():
-            try:
-                self._socket_path.unlink()
-            except OSError:
-                pass

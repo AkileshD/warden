@@ -27,16 +27,18 @@ from daemon.rules.engine import RuleEngine
 from daemon.inspectors.base import Decision
 
 POLICY_PATH = os.environ.get("WARDEN_POLICY_PATH", "daemon/rules/policy.yaml")
-WARDEN_SOCKET_PATH = os.environ.get("WARDEN_SOCKET_PATH", "/tmp/warden_ipc/warden.sock")
+WARDEN_UDP_HOST = os.environ.get("WARDEN_UDP_HOST", "host.docker.internal")
+WARDEN_UDP_PORT = int(os.environ.get("WARDEN_UDP_PORT", 5005))
+WARDEN_TOKEN_PATH = os.environ.get("WARDEN_TOKEN_PATH", "/tmp/warden_ipc/token.txt")
 NFQUEUE_NUM = 0
 
 
 def verify_environment() -> bool:
     """Verify the container environment before attempting NFQUEUE work."""
     ok = True
-    socket_dir = os.path.dirname(WARDEN_SOCKET_PATH)
-    if not os.path.isdir(socket_dir):
-        print(f"[warden-sidecar] ERROR: IPC directory {socket_dir!r} does not exist.", file=sys.stderr, flush=True)
+    token_dir = os.path.dirname(WARDEN_TOKEN_PATH)
+    if not os.path.isdir(token_dir):
+        print(f"[warden-sidecar] ERROR: IPC directory {token_dir!r} does not exist.", file=sys.stderr, flush=True)
         ok = False
 
     try:
@@ -67,11 +69,20 @@ def setup_iptables(queue_num: int) -> None:
         ["iptables", "-I", "OUTPUT", "-j", "NFQUEUE", "--queue-num", str(queue_num)],
         check=True
     )
+    # Exempt our own UDP IPC traffic from being intercepted!
+    subprocess.run(
+        ["iptables", "-I", "OUTPUT", "-p", "udp", "--dport", str(WARDEN_UDP_PORT), "-j", "ACCEPT"],
+        check=True
+    )
 
 
 def teardown_iptables(queue_num: int) -> None:
     """Remove the iptables rule on exit."""
     print(f"[warden-sidecar] Removing iptables rule for queue {queue_num}...", flush=True)
+    subprocess.run(
+        ["iptables", "-D", "OUTPUT", "-p", "udp", "--dport", str(WARDEN_UDP_PORT), "-j", "ACCEPT"],
+        check=False
+    )
     subprocess.run(
         ["iptables", "-D", "OUTPUT", "-j", "NFQUEUE", "--queue-num", str(queue_num)],
         check=False  # Ignore errors if rule is already gone
@@ -80,6 +91,17 @@ def teardown_iptables(queue_num: int) -> None:
 
 def build_callback(parser: PacketParser, inspector: NetworkInspector, engine: RuleEngine):
     """Factory to build the packet callback with closed-over dependencies."""
+    _cached_token = None
+
+    def get_token():
+        nonlocal _cached_token
+        if _cached_token is None:
+            try:
+                with open(WARDEN_TOKEN_PATH, "r") as f:
+                    _cached_token = f.read().strip()
+            except OSError:
+                pass
+        return _cached_token
     def packet_callback(packet) -> None:
         raw_bytes = packet.get_payload()
         
@@ -97,10 +119,16 @@ def build_callback(parser: PacketParser, inspector: NetworkInspector, engine: Ru
         # 3. Evaluate
         final_verdict = engine.evaluate(parsed, [verdict] if verdict else [])
         
-        # 4. Log via IPC UDS
+        # 4. Log via UDP IPC
         try:
+            token = get_token()
+            if not token:
+                # If we don't have the token yet, we can't send. Graceful drop.
+                raise ValueError(f"Token file not found or empty at {WARDEN_TOKEN_PATH}")
+
             payload = {
                 "timestamp": time.time(),
+                "token": token,
                 "verdict": {
                     "decision": final_verdict.decision.value,
                     "reason": final_verdict.reason,
@@ -116,11 +144,11 @@ def build_callback(parser: PacketParser, inspector: NetworkInspector, engine: Ru
                     "raw_input": parsed.raw_input
                 }
             }
-            with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
-                s.sendto(json.dumps(payload).encode("utf-8"), WARDEN_SOCKET_PATH)
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.sendto(json.dumps(payload).encode("utf-8"), (WARDEN_UDP_HOST, WARDEN_UDP_PORT))
         except Exception as e:
-            # Fallback gracefully if the socket is missing or full
-            print(f"[warden-sidecar] Warning: failed to send event to socket: {e}", file=sys.stderr)
+            # Fallback gracefully if UDP sending fails
+            print(f"[warden-sidecar] Warning: failed to send event to UDP socket: {e}", file=sys.stderr)
         
         # 5. Enforce
         if final_verdict.decision == Decision.ALLOW:

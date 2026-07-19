@@ -24,7 +24,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from daemon.parser.shell_parser import ParsedAction
+    from daemon.inspectors.base import Verdict
 
 
 @dataclass

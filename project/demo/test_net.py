@@ -1,0 +1,1 @@
+import urllib.request; urllib.request.urlopen('http://104.20.23.154', timeout=3)
