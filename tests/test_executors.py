@@ -253,3 +253,59 @@ class TestCoreLoop:
         rows = daemon.read_ledger()
         assert len(rows) == 2
         daemon.close()
+
+
+# ── Step 3: PID surfacing ─────────────────────────────────────────────────────
+
+class TestRealExecutorPID:
+    """Confirm subprocess PID is correctly surfaced through ExecutionResult."""
+
+    def test_pid_is_positive_integer_on_success(self):
+        executor = RealExecutor()
+        action = make_action("echo hello")
+        result = executor.run(action, make_verdict(Decision.ALLOW))
+        assert result.pid is not None, "PID should be set on successful real execution"
+        assert isinstance(result.pid, int)
+        assert result.pid > 0
+
+    def test_pid_not_none_on_redirect(self, tmp_path):
+        """PID must be set even when stdout is redirected to a file."""
+        target = tmp_path / "out.txt"
+        executor = RealExecutor(work_dir=tmp_path)
+        action = make_action(f"echo redirected > {target}")
+        result = executor.run(action, make_verdict(Decision.ALLOW))
+        assert result.pid is not None and result.pid > 0
+
+    def test_pid_is_none_on_file_not_found(self):
+        """FileNotFoundError path: no subprocess was started, PID must be None."""
+        executor = RealExecutor()
+        action = make_action("echo placeholder")
+        action.binary = "__no_such_binary__"
+        result = executor.run(action, make_verdict(Decision.ALLOW))
+        assert result.exit_code == 127
+        assert result.pid is None
+
+    def test_pid_is_none_on_fake_executor(self):
+        """FakeExecutor never starts a subprocess — PID must always be None."""
+        executor = FakeExecutor()
+        action = make_action("rm -rf /")
+        result = executor.run(action, make_verdict(Decision.BLOCK))
+        assert result.pid is None
+
+    def test_exit_code_and_stderr_preserved_on_nonzero(self):
+        """Nonzero exit code from real process is preserved exactly as before."""
+        executor = RealExecutor()
+        action = make_action("ls /nonexistent_path_warden_test_12345")
+        result = executor.run(action, make_verdict(Decision.ALLOW))
+        assert result.exit_code != 0
+        assert result.pid is not None and result.pid > 0
+
+    def test_existing_behavior_stdout_capture(self):
+        """stdout is still captured correctly after the Popen refactor."""
+        executor = RealExecutor()
+        action = make_action("echo popen_works")
+        result = executor.run(action, make_verdict(Decision.ALLOW))
+        assert "popen_works" in result.stdout
+        assert result.exit_code == 0
+        assert result.was_real is True
+        assert result.was_fabricated is False

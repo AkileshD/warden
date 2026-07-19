@@ -23,7 +23,8 @@ WHY separate real/fake executors rather than a single executor with a flag:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -37,6 +38,8 @@ class ExecutionResult:
       exit_code     — Exit code returned to the caller (always 0 for fakes)
       was_real      — True if the command was actually executed on the OS
       was_fabricated— True if the response was constructed by the fake executor
+      pid           — Subprocess PID set by RealExecutor after Popen; None everywhere else.
+                      Used by core.py to update the pending_actions row for correlation.
     """
 
     stdout: str
@@ -44,6 +47,7 @@ class ExecutionResult:
     exit_code: int
     was_real: bool
     was_fabricated: bool
+    pid: Optional[int] = None  # Subprocess PID; set by RealExecutor only. None for fake/cd/error paths.
 
 
 class Executor(ABC):

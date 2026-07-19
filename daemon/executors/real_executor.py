@@ -54,19 +54,41 @@ class RealExecutor(Executor):
         cmd = [action.binary] + action.flags + action.args
 
         try:
-            result = subprocess.run(
+            # WHY Popen + communicate() instead of subprocess.run():
+            # subprocess.run() does not expose the child PID after the process
+            # has exited. We need the PID to update the pending_actions row for
+            # Phase 3 correlation (core.py passes it to logger.update_pending_action_pid).
+            # Popen exposes .pid immediately after the process starts, before
+            # communicate() waits for it to finish — behavior is otherwise identical
+            # to subprocess.run(capture_output=True, text=True, timeout=30).
+            proc = subprocess.Popen(
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=30,  # TODO(phase2): make timeout configurable in policy.yaml
                 cwd=str(self._work_dir) if self._work_dir else None,
             )
-            
+            pid = proc.pid  # Available immediately after Popen, before communicate()
+
+            try:
+                stdout_raw, stderr_raw = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()  # Drain pipes after kill to avoid zombie/deadlock
+                return ExecutionResult(
+                    stdout="",
+                    stderr=f"{action.binary}: timed out after 30s",
+                    exit_code=124,
+                    was_real=True,
+                    was_fabricated=False,
+                    pid=pid,
+                )
+
             if action.redirect_target:
                 mode = "a" if action.redirect_append else "w"
                 try:
                     with open(action.redirect_target, mode) as f:
-                        f.write(result.stdout)
+                        f.write(stdout_raw)
                     # Don't return stdout in the result if it was redirected (matches shell behavior)
                     stdout_result = ""
                 except Exception as e:
@@ -76,16 +98,18 @@ class RealExecutor(Executor):
                         exit_code=1,
                         was_real=True,
                         was_fabricated=False,
+                        pid=pid,
                     )
             else:
-                stdout_result = result.stdout
+                stdout_result = stdout_raw
 
             return ExecutionResult(
                 stdout=stdout_result,
-                stderr=result.stderr,
-                exit_code=result.returncode,
+                stderr=stderr_raw,
+                exit_code=proc.returncode,
                 was_real=True,
                 was_fabricated=False,
+                pid=pid,
             )
         except FileNotFoundError:
             # Binary not found on PATH
@@ -93,14 +117,6 @@ class RealExecutor(Executor):
                 stdout="",
                 stderr=f"{action.binary}: command not found",
                 exit_code=127,
-                was_real=True,
-                was_fabricated=False,
-            )
-        except subprocess.TimeoutExpired:
-            return ExecutionResult(
-                stdout="",
-                stderr=f"{action.binary}: timed out after 30s",
-                exit_code=124,
                 was_real=True,
                 was_fabricated=False,
             )
