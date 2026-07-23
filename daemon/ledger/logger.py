@@ -66,6 +66,32 @@ class LedgerEvent:
         return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
+@dataclass
+class ProposedRule:
+    """
+    CONTRACT: One row in the `proposed_rules` table (schema.sql).
+
+    Written by the Phase 3 advisor (demo/run_phase3_advisor.py) when a
+    detection threshold is crossed. Read and actioned by approval_cli.
+    Never written by the daemon's real-time interception path.
+    """
+
+    proposal_id: str           # UUID4
+    created_at: float          # time.time()
+    detection_rule: str        # e.g. 'exact_match_frequency_v1'
+    matched_binary: str        # e.g. 'curl'
+    matched_destination: str   # dst_ip or hostname_or_sni value
+    occurrence_count: int      # count of FLAGs that triggered this
+    window_start: float        # Unix timestamp: earliest matching event
+    window_end: float          # Unix timestamp: latest matching event
+    proposed_yaml_rule: str    # candidate policy.yaml snippet (YAML string)
+    status: str = "pending"    # 'pending' | 'approved' | 'rejected'
+    reasoning_text: str = ""   # filled template (human-readable)
+    replay_total: int = 0      # B: total historical events matching the rule
+    replay_changed: int = 0    # A: events that would have changed verdict
+    permissive_change: int = 0 # 1 if proposed rule is ALLOW-expanding, 0 otherwise
+
+
 def _serialise_parsed_action(action: ParsedAction) -> str:
     """Convert ParsedAction (or a subclass) to a JSON string for ledger storage.
 
@@ -340,3 +366,115 @@ class Logger:
         except Exception as e:
             import sys
             print(f"[warden:logger] ERROR cleaning up pending_actions: {e}", file=sys.stderr)
+
+    # ------------------------------------------------------------------
+    # Proposed-rules (Phase 3 advisor)
+    # ------------------------------------------------------------------
+
+    def write_proposed_rule(self, proposal: "ProposedRule") -> None:  # noqa: F821
+        """Insert one ProposedRule row with status='pending'. Never raises."""
+        try:
+            with self._lock:
+                self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO proposed_rules (
+                        proposal_id, created_at, detection_rule,
+                        matched_binary, matched_destination,
+                        occurrence_count, window_start, window_end,
+                        proposed_yaml_rule, status, reasoning_text,
+                        replay_total, replay_changed, permissive_change
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        proposal.proposal_id,
+                        proposal.created_at,
+                        proposal.detection_rule,
+                        proposal.matched_binary,
+                        proposal.matched_destination,
+                        proposal.occurrence_count,
+                        proposal.window_start,
+                        proposal.window_end,
+                        proposal.proposed_yaml_rule,
+                        proposal.status,
+                        proposal.reasoning_text,
+                        proposal.replay_total,
+                        proposal.replay_changed,
+                        proposal.permissive_change,
+                    ),
+                )
+                self._conn.commit()
+        except Exception as e:
+            import sys
+            print(f"[warden:logger] ERROR writing proposed_rule: {e}", file=sys.stderr)
+
+    def list_pending_proposals(self) -> list:
+        """Return all proposed_rules rows with status='pending', ordered by created_at."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM proposed_rules WHERE status = 'pending' ORDER BY created_at ASC"
+            )
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    def list_all_proposals(self) -> list:
+        """Return all proposed_rules rows (any status), ordered by created_at."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM proposed_rules ORDER BY created_at ASC"
+            )
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+    def get_proposal(self, proposal_id: str) -> Optional[dict]:
+        """Return a single proposed_rules row by proposal_id, or None if not found."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM proposed_rules WHERE proposal_id = ?", (proposal_id,)
+            )
+            cols = [d[0] for d in cursor.description]
+            row = cursor.fetchone()
+            return dict(zip(cols, row)) if row else None
+
+    def update_proposal_status(self, proposal_id: str, status: str) -> None:
+        """Mark a proposal approved or rejected.
+
+        Unlike other Logger methods, this raises ValueError for an invalid
+        status — a wrong status string is a programming error in the caller,
+        not a transient failure worth swallowing.
+        """
+        if status not in ("approved", "rejected"):
+            raise ValueError(f"update_proposal_status: invalid status {status!r}; must be 'approved' or 'rejected'")
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "UPDATE proposed_rules SET status = ? WHERE proposal_id = ?",
+                    (status, proposal_id),
+                )
+                self._conn.commit()
+        except Exception as e:
+            import sys
+            print(f"[warden:logger] ERROR updating proposal status: {e}", file=sys.stderr)
+
+    def read_events_for_pair(self, binary: str, destination: str) -> list:
+        """Return all events rows where (binary, destination) matches.
+
+        destination matches against hostname_or_sni first, then dst_ip — the
+        same COALESCE priority used by the detection scanner.
+        Used by dry_run_replay to fetch historical rows for A-of-B calculation.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                SELECT * FROM events
+                WHERE
+                    json_extract(parsed_action, '$.binary') = ?
+                    AND (
+                        json_extract(parsed_action, '$.hostname_or_sni') = ?
+                        OR json_extract(parsed_action, '$.dst_ip') = ?
+                    )
+                ORDER BY id ASC
+                """,
+                (binary, destination, destination),
+            )
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]

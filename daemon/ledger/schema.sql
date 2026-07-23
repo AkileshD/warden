@@ -75,3 +75,50 @@ CREATE TABLE IF NOT EXISTS pending_actions (
 -- Index for the sidecar's time-window query (dispatched_at BETWEEN lo AND hi)
 CREATE INDEX IF NOT EXISTS idx_pending_actions_dispatched
     ON pending_actions(dispatched_at);
+
+-- ── proposed_rules ────────────────────────────────────────────────────────────
+-- Written by the Phase 3 advisor when a detection threshold is crossed.
+-- Read by the approval CLI. Never written by the daemon's hot path.
+--
+-- WHY same database (not a separate file): consistent with the single-writer
+-- principle from Phase 2's correlation fix. The daemon process owns this DB;
+-- the advisor script and approval CLI are the only other accessors, and they
+-- access it read-mostly (scan+list) or with low-frequency single-row updates
+-- (approve/reject). No concurrency concern.
+--
+-- WHY replay_total/replay_changed as stored columns (not recomputed):
+-- The dry-run replay runs once at proposal generation time against the ledger
+-- as it existed then. Re-running later would give different numbers as the
+-- ledger grows, producing inconsistent "evidence" for the same proposal.
+-- Storing them makes the proposal's evidence immutable.
+--
+-- WHY permissive_change as INTEGER (not derived from proposed_yaml_rule):
+-- Avoids re-parsing the YAML string at approval time. The approval CLI reads
+-- this column to decide whether the asymmetric-scrutiny path applies.
+
+CREATE TABLE IF NOT EXISTS proposed_rules (
+    proposal_id         TEXT    PRIMARY KEY,    -- UUID4
+    created_at          REAL    NOT NULL,       -- time.time() at proposal generation
+    detection_rule      TEXT    NOT NULL,       -- e.g. 'exact_match_frequency_v1'
+    matched_binary      TEXT    NOT NULL,       -- e.g. 'curl'
+    matched_destination TEXT    NOT NULL,       -- dst_ip or hostname_or_sni value
+    occurrence_count    INTEGER NOT NULL,       -- count of FLAGs that triggered this
+    window_start        REAL    NOT NULL,       -- Unix timestamp: earliest matching event
+    window_end          REAL    NOT NULL,       -- Unix timestamp: latest matching event
+    proposed_yaml_rule  TEXT    NOT NULL,       -- candidate policy.yaml snippet (YAML string)
+    status              TEXT    NOT NULL        -- 'pending' | 'approved' | 'rejected'
+                        CHECK(status IN ('pending','approved','rejected')),
+    reasoning_text      TEXT    NOT NULL,       -- filled template (human-readable)
+    replay_total        INTEGER NOT NULL,       -- B: total historical events matching the rule
+    replay_changed      INTEGER NOT NULL,       -- A: events that would have changed verdict
+    permissive_change   INTEGER NOT NULL        -- 1 if proposed rule is ALLOW-expanding, 0 otherwise
+                        CHECK(permissive_change IN (0, 1))
+);
+
+-- Index for approval_cli list (filtering by status = 'pending')
+CREATE INDEX IF NOT EXISTS idx_proposed_rules_status
+    ON proposed_rules(status);
+
+-- Index for ordering proposals by age
+CREATE INDEX IF NOT EXISTS idx_proposed_rules_created_at
+    ON proposed_rules(created_at);
