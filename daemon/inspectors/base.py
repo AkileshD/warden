@@ -19,7 +19,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from daemon.parser.shell_parser import ParsedAction
 
 
 class Decision(Enum):
@@ -63,7 +66,7 @@ class Inspector(ABC):
     """
 
     @abstractmethod
-    def inspect(self, action: "ParsedAction") -> Optional[Verdict]:  # noqa: F821 (forward ref)
+    def inspect(self, action: "ParsedAction") -> Optional[Verdict]:
         """Inspect a parsed action and return a verdict, or None if no opinion.
 
         CONTRACT: Must be pure — no writes, no side effects, no IO.

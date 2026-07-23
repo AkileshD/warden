@@ -153,15 +153,17 @@ This is a living list of everything intentionally postponed across the whole pro
 - **Phase 5:** Directory-state inconsistency across agent turns (`./project` appeared to vanish) — found during validation milestone.
 - **Phase 5:** Argument-order scrambling in commands like `find` ("paths must precede expression") — found during validation milestone.
 - **Phase 5:** General agent integration layer design not yet decided (CLI wrapper vs SDK vs other).
-- **Phase 3:** FLAG-only ML inspector — named idea, not designed or built.
-- **Phase 3:** Tier 2 "proposed rules" staging file format and location — TBD.
+- **Phase 3:** FLAG-only ML inspector — named idea, not designed or built. See `WARDEN_SPEC.md §9`.
 - **Phase 3:** LLM-based explanation generation for complex multi-factor patterns — open question, not committed. Revisit only if templating proves insufficient.
+- **Phase 3 detection refinement (near-term):** CIDR-block clustering — group by /24 instead of requiring exact `dst_ip` match for the N=10/T=6h detection rule. Add once the exact-match rule has been validated against real ledger data and proves too coarse in practice (e.g. exfil to adjacent IPs in the same subnet not being caught). See `WARDEN_SPEC.md §9`.
+- **Phase 3 detection refinement (longer-term, not scheduled):** Rate-of-change / burst detection relative to a rolling historical baseline, instead of a flat threshold. Deferred until enough historical ledger data exists for a meaningful baseline to be computed — meaningless to build before real usage data is available. See `WARDEN_SPEC.md §9`.
 - **Daemon CLI:** Control interface protocol (Unix socket vs HTTP vs message queue) — explicit non-decision, deferred until CLI is built.
 - **Jail Base Image:** `requests` package missing from jail image — deliberate decision, not an oversight (declined to expand attack surface).
 
 ### Resolved
 
 - **Phase 3 Prerequisite:** Two-Ledgers Gap + Correlation Gap. Fixed via UDP IPC from sidecar to host daemon, using a pre-shared token and loopback socket, enforcing a single-writer pattern and resolving macOS virtiofs `EOPNOTSUPP` and WAL split-brain issues. Sidecar IPTables modified to exempt its own UDP IPC packets from NFQUEUE interception. See `WARDEN_SPEC.md §7.4`.
+- **Phase 3 Tier 2 staging format/location:** Resolved. `proposed_rules` table in the daemon's existing SQLite DB — no new file, no new writer, consistent with the single-writer principle. Schema drafted in `WARDEN_SPEC.md §9`.
 
 ---
 
@@ -212,6 +214,7 @@ Findings & Backlog Items (Phase 5):
 - **Correlation Gap Documented (2026-07-16)** — Added "The Correlation Gap" to `WARDEN_SPEC.md §7.4` and added an eBPF sourcing note to the v2.0 migration section. Discussion surfaced that Phase 3's advisor cannot reliably reason about cause-and-effect without fixing this gap first (linking shell events to network events). Documented env-var tagging (recommended), PID-based, and timestamp-window approaches.
 - **Two-Ledgers Gap Found + Correlation Gap Revised (2026-07-19)** — Live testing confirmed the env-var and PID-based correlation approaches are not viable: jail and sidecar run in separate PID namespaces; `/proc/<pid>/environ` for jail processes is inaccessible from the sidecar. Deeper investigation revealed the Phase 2 "unified ledger" goal was never fully achieved — daemon and sidecar write to two completely separate SQLite files that have never been mounted in the same place. Updated `WARDEN_SPEC.md §7.4` with the compound fix: `pending_actions` table in the shared `warden_ledger` volume (correlation) + routing daemon shell event writes to the same volume (ledger unification). Backlog updated accordingly.
 - **UDP IPC Fix Complete (2026-07-19)** — Successfully replaced sidecar SQLite writes with a UDP IPC link to the daemon. Daemon listens on `0.0.0.0:5005` (with UUID token auth) and performs a single-writer ledger insert. Solves the WAL split-brain issue across Docker Desktop macOS virtiofs. Discovered and fixed an infinite interception loop where the sidecar's `OUTPUT` NFQUEUE iptables rule caught and dropped its own UDP IPC packets by adding an explicit exception rule (`-p udp --dport 5005 -j ACCEPT`). 5x E2E tests passing 5/5.
+- **Phase 3 detection design finalized (2026-07-23, spec-only)** — Starting detection rule: `(binary, dst_ip/hostname_or_sni)` exact-match frequency threshold, N=10 FLAGs within a rolling T=6h window generates a proposal. N=10/T=6h are explicitly named as starting constants expected to be tuned against real data. Template-based explanation format documented with the concrete fill-in structure. Tier 2 staging format resolved: `proposed_rules` table in the daemon's existing SQLite DB (first-draft schema in `WARDEN_SPEC.md §9`). CIDR-block clustering and rate-of-change/burst detection scoped out of the initial build and added as `§4` backlog items (near-term and longer-term respectively).
 ---
 
 ## 8. Note on Future Files (do not build yet — context only)
