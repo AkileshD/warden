@@ -84,6 +84,8 @@ def _insert_network_flag(logger: Logger, binary: str, destination: str,
     """Insert a synthetic FLAG network event into the events table."""
     if ts is None:
         ts = time.time()
+    from datetime import datetime, timezone
+    ts_str = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
     if is_hostname_dest:
         ip_val = None if pure_hostname else (custom_ip or "1.2.3.4")
@@ -111,10 +113,10 @@ def _insert_network_flag(logger: Logger, binary: str, destination: str,
         logger._conn.execute(
             """
             INSERT INTO events
-                (timestamp, raw_input, parsed_action, event_type, verdict, reason, execution, output)
-            VALUES (?, ?, ?, 'network', 'FLAG', 'test', 'none', '{}')
+            (timestamp, session_id, raw_input, event_type, verdict, risk, execution, parsed_action)
+            VALUES (?, ?, ?, 'network', 'FLAG', 'test', 'none', ?)
             """,
-            (str(ts), f"{binary} to {destination}", parsed_action),
+            (ts_str, "test-session", "raw", parsed_action)
         )
         logger._conn.commit()
 

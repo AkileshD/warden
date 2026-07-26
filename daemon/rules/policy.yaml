@@ -143,6 +143,13 @@ network_rules:
     risk: low
     reason: "example.com — allowed by IP for demo purposes"
 
+  # ── Flag: 1.1.1.1 for Phase 3 Testing ────────────────────────────────────
+  - match:
+      dst_ip: ["1.1.1.1"]
+    action: flag
+    risk: medium
+    reason: "Cloudflare DNS — flagged for pattern detection testing"
+
   # ── Allowlist: loopback ───────────────────────────────────────────────────
   - match:
       dst_ip: ["127.0.0.0/8"]

@@ -78,13 +78,13 @@ def scan(
         json_extract(parsed_action, '$.binary')             AS binary,
         json_extract(parsed_action, '$.dst_ip')             AS destination,
         COUNT(*)                                            AS occurrence_count,
-        MIN(CAST(timestamp AS REAL))                        AS window_start,
-        MAX(CAST(timestamp AS REAL))                        AS window_end
+        MIN(CAST(strftime('%s', timestamp) AS REAL))        AS window_start,
+        MAX(CAST(strftime('%s', timestamp) AS REAL))        AS window_end
     FROM events
     WHERE
         verdict = 'FLAG'
         AND event_type = 'network'
-        AND CAST(timestamp AS REAL) >= :cutoff
+        AND CAST(strftime('%s', timestamp) AS REAL) >= :cutoff
         AND json_extract(parsed_action, '$.dst_ip') IS NOT NULL
     GROUP BY binary, destination
     HAVING COUNT(*) >= :n_threshold
@@ -95,13 +95,13 @@ def scan(
         json_extract(parsed_action, '$.binary')             AS binary,
         json_extract(parsed_action, '$.hostname_or_sni')    AS destination,
         COUNT(*)                                            AS occurrence_count,
-        MIN(CAST(timestamp AS REAL))                        AS window_start,
-        MAX(CAST(timestamp AS REAL))                        AS window_end
+        MIN(CAST(strftime('%s', timestamp) AS REAL))        AS window_start,
+        MAX(CAST(strftime('%s', timestamp) AS REAL))        AS window_end
     FROM events
     WHERE
         verdict = 'FLAG'
         AND event_type = 'network'
-        AND CAST(timestamp AS REAL) >= :cutoff
+        AND CAST(strftime('%s', timestamp) AS REAL) >= :cutoff
         AND json_extract(parsed_action, '$.hostname_or_sni') IS NOT NULL
     GROUP BY binary, destination
     HAVING COUNT(*) >= :n_threshold

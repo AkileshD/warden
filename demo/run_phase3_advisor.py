@@ -127,6 +127,7 @@ def main() -> int:
             detection_rule="exact_match_frequency_v1",
             matched_binary=candidate.binary,
             matched_destination=candidate.destination,
+            detection_axis=candidate.detection_axis,
             occurrence_count=candidate.occurrence_count,
             window_start=candidate.window_start,
             window_end=candidate.window_end,
