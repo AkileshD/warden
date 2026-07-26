@@ -757,11 +757,15 @@ This is a **ONE-OFF, throwaway test**. It is explicitly NOT the same as Phase 5'
    *(If genuinely complex multi-factor patterns arise later where templating feels insufficient, revisit whether a short natural-language summary step is worth adding — but do not build this speculatively.)*
 
 3. **Starting Detection Rule — Exact-Match Frequency Threshold:**
-   The first and only detection rule for the initial build is:
+   The first and only detection rule for the initial build uses asymmetric grouping:
 
-   > **When a specific `binary` + `dst_ip` combination OR a specific `binary` + `hostname_or_sni` combination receives a `FLAG` verdict ≥ N=10 times within a rolling T=6-hour window, generate a proposed rule.**
+   > **For shell-origin events: When a specific `binary` + `dst_ip` combination OR a specific `binary` + `hostname_or_sni` combination receives a `FLAG` verdict ≥ N=10 times within a rolling T=6-hour window, generate a proposed rule.**
+   > 
+   > **For network-origin events: When a specific `dst_ip` OR a specific `hostname_or_sni` (ignoring binary) receives a `FLAG` verdict ≥ N=10 times within a rolling T=6-hour window, generate a proposed rule.**
 
-   **N=10 and T=6h are initial starting constants, not fixed values.** They are expected to be tuned once real proposals are seen against real ledger data. The detection algorithm runs **two independent SQL queries** against the `events` table (one grouped by IP, one grouped by hostname) and generates a proposal if either crosses the threshold. This "separate axes" design ensures that an IP hit with and without SNI is correctly grouped and caught on the IP axis.
+   **WHY the asymmetry:** Network enforcement (`policy.yaml` `network_rules`) can only ever act on destination/port. It cannot act on the originating binary. Therefore, merging network-origin `FLAG` events across all binaries for a destination-only threshold produces the correct signal. Breaking network events out by binary would incorrectly fragment the threshold count for a single malicious destination. Shell-origin events, however, are enforced by binary, so they retain the `(binary, destination)` grouping.
+
+   **N=10 and T=6h are initial starting constants, not fixed values.** They are expected to be tuned once real proposals are seen against real ledger data. The detection algorithm runs **two independent SQL queries** per event type (one grouped by IP, one grouped by hostname) and generates a proposal if either crosses the threshold. This "separate axes" design ensures that an IP hit with and without SNI is correctly grouped and caught on the IP axis.
 
    Refinements such as CIDR-block clustering (grouping by /24 instead of exact IP) and rate-of-change/burst detection are explicitly **not** part of this initial build — they are captured in `WARDEN_BUILD_CONTEXT.md §4` as near-term and longer-term backlog items respectively, to be revisited once the N=10/T=6h exact-match rule has been validated against real data.
 

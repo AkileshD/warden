@@ -105,7 +105,7 @@ warden/
 
 | Component | Status | Notes |
 |---|---|---|
-| `daemon/advisor/detection_scanner.py` | done | Implementation of the N=10/T=6h threshold scanning. Evaluates `dst_ip` and `hostname_or_sni` on independent axes, producing separate candidate proposals. |
+| `daemon/advisor/detection_scanner.py` | done | Implementation of the N=10/T=6h threshold scanning. Employs asymmetric grouping: shell-origin events group by `(binary, destination)` while network-origin events group by `(destination)` alone. Evaluates `dst_ip` and `hostname_or_sni` on independent axes. Binary attribution for network candidates is resolved best-effort via `action_id`. |
 | `daemon/ledger/schema.sql` / `logger.py` | done | `proposed_rules` table added with `detection_axis` column for full auditability back to the triggering axis. |
 | `daemon/advisor/template_engine.py` | done | Deterministic rule generation + reasoning text filling, now properly surfacing the matching axis (e.g. "matched via IP"). |
 | `daemon/advisor/dry_run_replay.py` | done | Replays historical events against candidate rules. Strictly filters events by the specific `detection_axis` (IP or hostname) to ensure accurate A-of-B counts. |
@@ -178,9 +178,9 @@ This is a living list of everything intentionally postponed across the whole pro
 ## 5. Handoff Note (overwrite this every session — do not append, replace)
 
 ```
-Phase 3 Detection-Axis Fix: COMPLETE. The detection scanner, schema, logger, template engine, and dry run replay have all been updated to evaluate IP and hostname on strictly independent axes (replacing the old COALESCE merge logic). All 227 tests pass, including new tests verifying strict axis isolation.
+Phase 3 Asymmetric Grouping Fix: COMPLETE. The detection scanner now correctly groups network-origin events by destination alone (since network enforcement acts on destination/port, not binary), while retaining (binary, destination) grouping for shell-origin events. Network candidate binary attribution is now resolved best-effort via `action_id` correlation for display purposes. Hardening (CONTRACT docstring, try/except failure isolation) added. All 230 tests pass.
 
-Next step: Phase 3 Integration. The core pipeline components are tested in isolation, but we need to run an end-to-end demo showing a real proposal generated from live ledger data, processed through the template engine and dry_run_replay, and presented for approval (likely wiring up the `approval_cli` to the daemon core).
+Next step: Phase 3 Integration. The core pipeline components are tested in isolation, but we need to run an end-to-end demo showing a real proposal generated from live ledger data, processed through the template engine and dry_run_replay, and presented for approval (likely wiring up the `approval_cli` to the daemon core). We also need to re-verify the Phase 2 standalone demo since `policy.yaml` has evolved.
 
 Findings & Backlog Items (Phase 5):
   - TODO(phase5): Investigate if container directory state (e.g. `mkdir project`) actually persists in the jail container across separate executor invocations, or if it only exists in the daemon's internal `_work_dir` tracking.
@@ -196,6 +196,8 @@ Findings & Backlog Items (Phase 5):
 **RESOLVED** — FLAG behaviour: FLAG → fake executor (treated as block). Marked distinctly in ledger as "FLAG" for Phase 3 triage.
 
 **RESOLVED** — Phase 3 detection grouping (hostname vs. dst_ip). Chose **separate axes** rather than hostname-priority `COALESCE`. Two independent queries run against the ledger: `(binary, dst_ip)` and `(binary, hostname_or_sni)`. This ensures that an IP hit with and without SNI (e.g. `curl` to IP:80 and IP:443) correctly crosses the threshold on the IP axis, rather than being split into two undercounting groups. The `proposed_rules` schema adds a `detection_axis` column to trace which query fired.
+
+**RESOLVED** — Phase 3 detection grouping (network-origin binary attribution). Decided to use **asymmetric grouping**: Shell-origin events are grouped by `(binary, destination)`, but network-origin events are grouped by `(destination)` alone (ignoring binary). This is because network enforcement (`policy.yaml` `network_rules`) can only ever act on destination/port, never on the originating binary. Merging network events across binaries for a destination-only threshold provides the correct signal. (Related context: this is the same class of grouping bug as the separate-axes entry above). For human context, `matched_binary` in `proposed_rules` and the reasoning template will still attempt to show the real originating binary(s) via the `action_id` correlation link on a best-effort basis, degrading gracefully if unmatched, but this must not affect the threshold count itself.
 
 **NOTE (not a conflict):** `ls /tmp` gets FLAG (default) not ALLOW in the demo because /tmp is outside `./project/**`. This is correct policy — the project-dir allow rule only covers `./project/**`. Adding a broader allow rule for read-only binaries outside the project is a policy decision, not an architecture decision. Document in README if confusing.
 

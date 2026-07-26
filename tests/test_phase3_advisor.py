@@ -80,7 +80,8 @@ def policy_path(tmp_path):
 def _insert_network_flag(logger: Logger, binary: str, destination: str,
                           is_hostname_dest: bool = True, ts: float | None = None,
                           pure_hostname: bool = False,
-                          custom_ip: str | None = None) -> None:
+                          custom_ip: str | None = None,
+                          action_id: str | None = None) -> None:
     """Insert a synthetic FLAG network event into the events table."""
     if ts is None:
         ts = time.time()
@@ -113,35 +114,44 @@ def _insert_network_flag(logger: Logger, binary: str, destination: str,
         logger._conn.execute(
             """
             INSERT INTO events
-            (timestamp, session_id, raw_input, event_type, verdict, risk, execution, parsed_action)
-            VALUES (?, ?, ?, 'network', 'FLAG', 'test', 'none', ?)
+            (timestamp, session_id, raw_input, event_type, verdict, risk, execution, parsed_action, action_id)
+            VALUES (?, ?, ?, 'network', 'FLAG', 'test', 'none', ?, ?)
             """,
-            (ts_str, "test-session", "raw", parsed_action)
+            (ts_str, "test-session", "raw", parsed_action, action_id)
         )
         logger._conn.commit()
 
 
 def _insert_shell_flag(logger: Logger, binary: str, destination: str,
-                        ts: float | None = None) -> None:
+                        ts: float | None = None, action_id: str | None = None,
+                        is_hostname_dest: bool = False) -> None:
     """Insert a synthetic FLAG shell event (should NOT be detected by scanner)."""
     if ts is None:
         ts = time.time()
-    parsed_action = json.dumps({
+    from datetime import datetime, timezone
+    ts_str = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    action_dict = {
         "binary": binary,
         "args": [],
         "flags": [],
         "target_paths": [],
         "raw_input": binary,
         "sub_commands": [],
-    })
+    }
+    if destination:
+        if is_hostname_dest:
+            action_dict["hostname_or_sni"] = destination
+        else:
+            action_dict["dst_ip"] = destination
+    parsed_action = json.dumps(action_dict)
     with logger._lock:
         logger._conn.execute(
             """
             INSERT INTO events
-                (timestamp, raw_input, parsed_action, event_type, verdict, reason, execution, output)
-            VALUES (?, ?, ?, 'shell_command', 'FLAG', 'test', 'none', '{}')
+                (timestamp, raw_input, parsed_action, event_type, verdict, reason, execution, output, action_id)
+            VALUES (?, ?, ?, 'shell_command', 'FLAG', 'test', 'none', '{}', ?)
             """,
-            (str(ts), binary, parsed_action),
+            (ts_str, binary, parsed_action, action_id),
         )
         logger._conn.commit()
 
@@ -166,7 +176,7 @@ class TestDetectionScanner:
         candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
         assert len(candidates) == 1
         c = candidates[0]
-        assert c.binary == "curl"
+        assert c.binary == "unknown source"
         assert c.destination == "1.2.3.4"
         assert c.detection_axis == "ip"
         assert c.occurrence_count == 10
@@ -203,20 +213,20 @@ class TestDetectionScanner:
         assert len(candidates) == 1
         assert candidates[0].occurrence_count == 10  # Only 10, not 15
 
-    def test_shell_events_excluded(self, tmp_db):
-        """10 shell FLAG events for same binary must not trigger detection (network only)."""
+    def test_shell_events_without_dest_excluded(self, tmp_db):
+        """10 shell FLAG events without a destination must not trigger detection."""
         for _ in range(10):
-            _insert_shell_flag(tmp_db, "curl", "evil.example.com")
+            _insert_shell_flag(tmp_db, "curl", "")
 
         candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
         assert candidates == []
 
-    def test_two_distinct_pairs_two_candidates(self, tmp_db):
-        """Two different (binary, destination) pairs each at threshold → two candidates."""
+    def test_shell_grouping_respects_binary(self, tmp_db):
+        """Two different shell-origin (binary, destination) pairs each at threshold → two candidates."""
         for _ in range(10):
-            _insert_network_flag(tmp_db, "curl", "evil.example.com", pure_hostname=True)
+            _insert_shell_flag(tmp_db, "curl", "evil.example.com", is_hostname_dest=True)
         for _ in range(12):
-            _insert_network_flag(tmp_db, "python3", "1.2.3.4", is_hostname_dest=False)
+            _insert_shell_flag(tmp_db, "python3", "1.2.3.4", is_hostname_dest=False)
 
         candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
         assert len(candidates) == 2
@@ -226,6 +236,64 @@ class TestDetectionScanner:
         assert axes == {"hostname", "ip"}
         binaries = {c.binary for c in candidates}
         assert binaries == {"curl", "python3"}
+
+    def test_network_grouping_ignores_binary(self, tmp_db):
+        """6 FLAG network events for 'curl' and 6 for 'wget' to same dst_ip -> ONE candidate with 12 counts."""
+        for _ in range(6):
+            _insert_network_flag(tmp_db, "placeholder", "1.2.3.4", is_hostname_dest=False, action_id="a1")
+            _insert_shell_flag(tmp_db, "curl", "", action_id="a1")
+        for _ in range(6):
+            _insert_network_flag(tmp_db, "placeholder", "1.2.3.4", is_hostname_dest=False, action_id="a2")
+            _insert_shell_flag(tmp_db, "wget", "", action_id="a2")
+
+        candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
+        assert len(candidates) == 1
+        assert candidates[0].occurrence_count == 12
+        assert candidates[0].binary == "multiple sources"
+        assert candidates[0].destination == "1.2.3.4"
+
+    def test_network_binary_resolution(self, tmp_db):
+        """Test binary resolution branches: single, multiple (covered above), unknown."""
+        # Single source
+        for _ in range(10):
+            _insert_network_flag(tmp_db, "placeholder", "8.8.8.8", is_hostname_dest=False, action_id="a3")
+        _insert_shell_flag(tmp_db, "nmap", "", action_id="a3")
+
+        # Unknown source (no shell correlation)
+        for _ in range(10):
+            _insert_network_flag(tmp_db, "placeholder", "9.9.9.9", is_hostname_dest=False)
+
+        candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
+        # Should find 8.8.8.8 and 9.9.9.9
+        assert len(candidates) == 2
+        c_nmap = next(c for c in candidates if c.destination == "8.8.8.8")
+        assert c_nmap.binary == "nmap"
+        c_unknown = next(c for c in candidates if c.destination == "9.9.9.9")
+        assert c_unknown.binary == "unknown source"
+
+    def test_resolve_network_binary_failure_isolation(self, tmp_db, monkeypatch):
+        """Monkeypatch resolution to fail, confirm candidate still returned as unknown source."""
+        def fail_resolve(*args, **kwargs):
+            raise RuntimeError("Database error")
+        monkeypatch.setattr("daemon.advisor.detection_scanner._resolve_network_binary", fail_resolve)
+
+        # Network events (will encounter exception during binary resolution)
+        for _ in range(10):
+            _insert_network_flag(tmp_db, "placeholder", "4.4.4.4", is_hostname_dest=False, action_id="a4")
+        _insert_shell_flag(tmp_db, "nmap", "", action_id="a4")
+
+        # Shell events (bypasses _resolve_network_binary entirely)
+        for _ in range(10):
+            _insert_shell_flag(tmp_db, "curl", "evil.example.com", is_hostname_dest=True)
+
+        candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
+        assert len(candidates) == 2
+        
+        c_net = next(c for c in candidates if c.destination == "4.4.4.4")
+        assert c_net.binary == "unknown source"
+        
+        c_shell = next(c for c in candidates if c.destination == "evil.example.com")
+        assert c_shell.binary == "curl"
 
     def test_ip_destination_detected(self, tmp_db):
         """Events with only dst_ip (no hostname_or_sni) are correctly grouped."""
