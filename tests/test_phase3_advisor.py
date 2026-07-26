@@ -78,16 +78,19 @@ def policy_path(tmp_path):
 
 
 def _insert_network_flag(logger: Logger, binary: str, destination: str,
-                          is_hostname_dest: bool = True, ts: float | None = None) -> None:
+                          is_hostname_dest: bool = True, ts: float | None = None,
+                          pure_hostname: bool = False,
+                          custom_ip: str | None = None) -> None:
     """Insert a synthetic FLAG network event into the events table."""
     if ts is None:
         ts = time.time()
 
     if is_hostname_dest:
+        ip_val = None if pure_hostname else (custom_ip or "1.2.3.4")
         parsed_action = json.dumps({
             "binary": binary,
             "raw_input": f"TCP {destination}:443",
-            "dst_ip": "1.2.3.4",
+            "dst_ip": ip_val,
             "dst_port": 443,
             "protocol": "TCP",
             "hostname_or_sni": destination,
@@ -156,19 +159,20 @@ class TestDetectionScanner:
     def test_at_threshold_one_candidate(self, tmp_db):
         """Exactly 10 events must produce exactly one candidate."""
         for _ in range(10):
-            _insert_network_flag(tmp_db, "curl", "evil.example.com")
+            _insert_network_flag(tmp_db, "curl", "1.2.3.4", is_hostname_dest=False)
 
         candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
         assert len(candidates) == 1
         c = candidates[0]
         assert c.binary == "curl"
-        assert c.destination == "evil.example.com"
+        assert c.destination == "1.2.3.4"
+        assert c.detection_axis == "ip"
         assert c.occurrence_count == 10
 
     def test_above_threshold_one_candidate(self, tmp_db):
         """11 events (N+1) still produces one candidate with correct count."""
         for _ in range(11):
-            _insert_network_flag(tmp_db, "curl", "evil.example.com")
+            _insert_network_flag(tmp_db, "curl", "1.2.3.4", is_hostname_dest=False)
 
         candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
         assert len(candidates) == 1
@@ -189,9 +193,9 @@ class TestDetectionScanner:
         """15 total events: 10 within window, 5 outside. Should detect at N=10."""
         now = time.time()
         for _ in range(10):
-            _insert_network_flag(tmp_db, "curl", "evil.example.com", ts=now - 1)
+            _insert_network_flag(tmp_db, "curl", "1.2.3.4", is_hostname_dest=False, ts=now - 1)
         for _ in range(5):
-            _insert_network_flag(tmp_db, "curl", "evil.example.com", ts=now - 8 * 3600)
+            _insert_network_flag(tmp_db, "curl", "1.2.3.4", is_hostname_dest=False, ts=now - 8 * 3600)
 
         candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
         assert len(candidates) == 1
@@ -208,12 +212,16 @@ class TestDetectionScanner:
     def test_two_distinct_pairs_two_candidates(self, tmp_db):
         """Two different (binary, destination) pairs each at threshold → two candidates."""
         for _ in range(10):
-            _insert_network_flag(tmp_db, "curl", "evil.example.com")
+            _insert_network_flag(tmp_db, "curl", "evil.example.com", pure_hostname=True)
         for _ in range(12):
             _insert_network_flag(tmp_db, "python3", "1.2.3.4", is_hostname_dest=False)
 
         candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
         assert len(candidates) == 2
+        
+        # We expect: (curl, hostname axis), (python3, IP axis)
+        axes = {c.detection_axis for c in candidates}
+        assert axes == {"hostname", "ip"}
         binaries = {c.binary for c in candidates}
         assert binaries == {"curl", "python3"}
 
@@ -226,6 +234,24 @@ class TestDetectionScanner:
         assert len(candidates) == 1
         assert candidates[0].destination == "9.9.9.9"
 
+    def test_mixed_axes_detected_independently(self, tmp_db):
+        """Mirrors the 11-event curl worked example from WARDEN_BUILD_CONTEXT.md.
+        8 events dst_ip-only, 3 events with hostname, same dst_ip.
+        IP axis crosses N=10 (11 events), hostname axis does not (3 events).
+        """
+        for _ in range(8):
+            _insert_network_flag(tmp_db, "curl", "1.2.3.4", is_hostname_dest=False)
+        
+        # 3 events with SNI "evil.example.com", which our fixture maps to dst_ip 1.2.3.4
+        for _ in range(3):
+            _insert_network_flag(tmp_db, "curl", "evil.example.com")
+
+        candidates = scan(tmp_db, n_threshold=10, window_hours=6.0)
+        assert len(candidates) == 1
+        assert candidates[0].destination == "1.2.3.4"
+        assert candidates[0].detection_axis == "ip"
+        assert candidates[0].occurrence_count == 11
+
 
 # ─── Template Engine Tests ─────────────────────────────────────────────────────
 
@@ -233,9 +259,11 @@ class TestTemplateEngine:
 
     def _make_candidate(self, binary="curl", destination="evil.example.com", count=10):
         now = time.time()
+        axis = "hostname" if _is_hostname(destination) else "ip"
         return DetectionCandidate(
             binary=binary,
             destination=destination,
+            detection_axis=axis,
             occurrence_count=count,
             window_start=now - 3600,
             window_end=now,
@@ -300,9 +328,11 @@ class TestDryRunReplay:
 
     def _candidate(self, binary="curl", destination="evil.example.com"):
         now = time.time()
+        axis = "hostname" if _is_hostname(destination) else "ip"
         return DetectionCandidate(
             binary=binary,
             destination=destination,
+            detection_axis=axis,
             occurrence_count=10,
             window_start=now - 3600,
             window_end=now,
@@ -333,6 +363,26 @@ class TestDryRunReplay:
         changed, total = replay(candidate, proposed_yaml, policy_path, tmp_db)
         assert total == 5  # Only the 5 evil.example.com events
         assert changed == 5
+
+    def test_replay_axis_isolation(self, tmp_db, policy_path):
+        """Replay must strictly filter by the candidate's detection_axis."""
+        # Insert 2 events for the SAME hostname, but DIFFERENT IPs
+        _insert_network_flag(tmp_db, "curl", "evil.example.com", custom_ip="1.1.1.1")
+        _insert_network_flag(tmp_db, "curl", "evil.example.com", custom_ip="2.2.2.2")
+
+        # 1. Replay against hostname axis (should see both events)
+        cand_hostname = self._candidate(destination="evil.example.com")
+        cand_hostname.detection_axis = "hostname"
+        yaml_hostname = build_proposed_rule(cand_hostname)
+        _, total_hostname = replay(cand_hostname, yaml_hostname, policy_path, tmp_db)
+        assert total_hostname == 2
+
+        # 2. Replay against IP axis for the first IP (should see only 1 event)
+        cand_ip = self._candidate(destination="1.1.1.1")
+        cand_ip.detection_axis = "ip"
+        yaml_ip = build_proposed_rule(cand_ip)
+        _, total_ip = replay(cand_ip, yaml_ip, policy_path, tmp_db)
+        assert total_ip == 1
 
     def test_replay_empty_ledger_returns_zeros(self, tmp_db, policy_path):
         """Empty ledger → (0, 0), no errors."""
@@ -374,6 +424,7 @@ class TestLoggerProposedRules:
             detection_rule="exact_match_frequency_v1",
             matched_binary="curl",
             matched_destination="evil.example.com",
+            detection_axis="hostname",
             occurrence_count=10,
             window_start=time.time() - 3600,
             window_end=time.time(),
@@ -435,6 +486,7 @@ class TestLoggerProposedRules:
             replay_total=20,
             replay_changed=15,
             permissive_change=0,
+            detection_axis="ip",
         )
         tmp_db.write_proposed_rule(p)
         row = tmp_db.get_proposal(p.proposal_id)
@@ -442,6 +494,7 @@ class TestLoggerProposedRules:
         assert row["replay_total"] == 20
         assert row["replay_changed"] == 15
         assert row["permissive_change"] == 0
+        assert row["detection_axis"] == "ip"
 
     def test_read_events_for_pair_returns_matching(self, tmp_db):
         _insert_network_flag(tmp_db, "curl", "evil.example.com")

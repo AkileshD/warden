@@ -759,9 +759,9 @@ This is a **ONE-OFF, throwaway test**. It is explicitly NOT the same as Phase 5'
 3. **Starting Detection Rule — Exact-Match Frequency Threshold:**
    The first and only detection rule for the initial build is:
 
-   > **When the same `binary` + `dst_ip` combination (or `binary` + `hostname_or_sni` if hostname is present) receives a `FLAG` verdict ≥ N=10 times within a rolling T=6-hour window, generate a proposed rule.**
+   > **When a specific `binary` + `dst_ip` combination OR a specific `binary` + `hostname_or_sni` combination receives a `FLAG` verdict ≥ N=10 times within a rolling T=6-hour window, generate a proposed rule.**
 
-   **N=10 and T=6h are initial starting constants, not fixed values.** They are expected to be tuned once real proposals are seen against real ledger data — if the threshold fires on noise or misses genuine patterns, these numbers are the first thing to adjust. The detection algorithm is a single SQL query against the `events` table grouped by `(binary, dst_ip)` or `(binary, hostname_or_sni)` filtered to the rolling window.
+   **N=10 and T=6h are initial starting constants, not fixed values.** They are expected to be tuned once real proposals are seen against real ledger data. The detection algorithm runs **two independent SQL queries** against the `events` table (one grouped by IP, one grouped by hostname) and generates a proposal if either crosses the threshold. This "separate axes" design ensures that an IP hit with and without SNI is correctly grouped and caught on the IP axis.
 
    Refinements such as CIDR-block clustering (grouping by /24 instead of exact IP) and rate-of-change/burst detection are explicitly **not** part of this initial build — they are captured in `WARDEN_BUILD_CONTEXT.md §4` as near-term and longer-term backlog items respectively, to be revisited once the N=10/T=6h exact-match rule has been validated against real data.
 
@@ -776,6 +776,8 @@ This is a **ONE-OFF, throwaway test**. It is explicitly NOT the same as Phase 5'
          detection_rule    TEXT NOT NULL,          -- e.g. 'exact_match_frequency_v1'
          matched_binary    TEXT NOT NULL,          -- e.g. 'curl'
          matched_destination TEXT NOT NULL,        -- dst_ip or hostname_or_sni
+         detection_axis    TEXT NOT NULL           -- 'ip' or 'hostname'
+                           CHECK(detection_axis IN ('ip', 'hostname')),
          occurrence_count  INTEGER NOT NULL,       -- how many FLAGs triggered this
          window_start      REAL NOT NULL,          -- start of the detection window
          window_end        REAL NOT NULL,          -- end of the detection window

@@ -95,9 +95,11 @@ def build_reasoning_text(
     # Calculate actual window width from the matched events
     actual_hours = (candidate.window_end - candidate.window_start) / 3600.0
 
+    axis_display = "IP" if candidate.detection_axis == "ip" else "hostname"
+
     lines = [
         f"Pattern detected: {candidate.occurrence_count} occurrences of "
-        f"`{candidate.binary}` \u2192 `{candidate.destination}` "
+        f"`{candidate.binary}` \u2192 `{candidate.destination}` (matched via {axis_display}) "
         f"with FLAG verdict over {actual_hours:.1f} hours "
         f"(threshold: N={n_threshold}, T={window_hours:.0f}h).",
         f"Proposed rule: see YAML below.",

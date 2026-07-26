@@ -102,6 +102,8 @@ CREATE TABLE IF NOT EXISTS proposed_rules (
     detection_rule      TEXT    NOT NULL,       -- e.g. 'exact_match_frequency_v1'
     matched_binary      TEXT    NOT NULL,       -- e.g. 'curl'
     matched_destination TEXT    NOT NULL,       -- dst_ip or hostname_or_sni value
+    detection_axis      TEXT    NOT NULL        -- 'ip' or 'hostname'
+                        CHECK(detection_axis IN ('ip', 'hostname')),
     occurrence_count    INTEGER NOT NULL,       -- count of FLAGs that triggered this
     window_start        REAL    NOT NULL,       -- Unix timestamp: earliest matching event
     window_end          REAL    NOT NULL,       -- Unix timestamp: latest matching event

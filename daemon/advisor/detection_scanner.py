@@ -35,12 +35,14 @@ class DetectionCandidate:
     Fields:
       binary           — the binary name (e.g. 'curl', 'python3')
       destination      — hostname_or_sni if available, else dst_ip
+      detection_axis   — 'ip' or 'hostname', indicating which query generated this candidate
       occurrence_count — number of FLAG verdicts in the window
       window_start     — Unix timestamp: earliest matching event in window
       window_end       — Unix timestamp: latest matching event in window
     """
     binary: str
     destination: str
+    detection_axis: str
     occurrence_count: int
     window_start: float
     window_end: float
@@ -55,8 +57,8 @@ def scan(
     the FLAG-count threshold within the rolling time window.
 
     Detection rule (from WARDEN_SPEC.md §9):
-      Same (binary, COALESCE(hostname_or_sni, dst_ip)) combination received
-      a FLAG verdict >= n_threshold times within the last window_hours hours.
+      Run two independent queries (IP axis and hostname axis).
+      A combination received a FLAG verdict >= n_threshold times within the last window_hours hours.
 
     Args:
       logger:       Logger instance (provides the SQLite connection under lock).
@@ -69,55 +71,78 @@ def scan(
 
     CONTRACT: Pure read — never writes, never raises (returns empty list on error).
     """
-    # WHY network events only: shell FLAG events are a different signal and are
-    # already visible in the ledger for human review. The Phase 3 initial rule
-    # specifically targets network destinations as the attack surface most likely
-    # to benefit from auto-proposed BLOCK rules.
     cutoff = time.time() - (window_hours * 3600.0)
 
-    sql = """
+    sql_ip = """
     SELECT
         json_extract(parsed_action, '$.binary')             AS binary,
-        COALESCE(
-            json_extract(parsed_action, '$.hostname_or_sni'),
-            json_extract(parsed_action, '$.dst_ip')
-        )                                                    AS destination,
-        COUNT(*)                                             AS occurrence_count,
-        MIN(CAST(timestamp AS REAL))                         AS window_start,
-        MAX(CAST(timestamp AS REAL))                         AS window_end
+        json_extract(parsed_action, '$.dst_ip')             AS destination,
+        COUNT(*)                                            AS occurrence_count,
+        MIN(CAST(timestamp AS REAL))                        AS window_start,
+        MAX(CAST(timestamp AS REAL))                        AS window_end
     FROM events
     WHERE
         verdict = 'FLAG'
         AND event_type = 'network'
         AND CAST(timestamp AS REAL) >= :cutoff
-        AND COALESCE(
-            json_extract(parsed_action, '$.hostname_or_sni'),
-            json_extract(parsed_action, '$.dst_ip')
-        ) IS NOT NULL
+        AND json_extract(parsed_action, '$.dst_ip') IS NOT NULL
     GROUP BY binary, destination
     HAVING COUNT(*) >= :n_threshold
-    ORDER BY occurrence_count DESC
     """
 
+    sql_hostname = """
+    SELECT
+        json_extract(parsed_action, '$.binary')             AS binary,
+        json_extract(parsed_action, '$.hostname_or_sni')    AS destination,
+        COUNT(*)                                            AS occurrence_count,
+        MIN(CAST(timestamp AS REAL))                        AS window_start,
+        MAX(CAST(timestamp AS REAL))                        AS window_end
+    FROM events
+    WHERE
+        verdict = 'FLAG'
+        AND event_type = 'network'
+        AND CAST(timestamp AS REAL) >= :cutoff
+        AND json_extract(parsed_action, '$.hostname_or_sni') IS NOT NULL
+    GROUP BY binary, destination
+    HAVING COUNT(*) >= :n_threshold
+    """
+
+    candidates = []
     try:
         with logger._lock:
-            cursor = logger._conn.execute(sql, {"cutoff": cutoff, "n_threshold": n_threshold})
-            rows = cursor.fetchall()
+            # 1. IP axis
+            cursor_ip = logger._conn.execute(sql_ip, {"cutoff": cutoff, "n_threshold": n_threshold})
+            for row in cursor_ip.fetchall():
+                binary, destination, count, win_start, win_end = row
+                if binary and destination:
+                    candidates.append(DetectionCandidate(
+                        binary=binary,
+                        destination=destination,
+                        detection_axis="ip",
+                        occurrence_count=count,
+                        window_start=float(win_start) if win_start else cutoff,
+                        window_end=float(win_end) if win_end else time.time(),
+                    ))
+
+            # 2. Hostname axis
+            cursor_hostname = logger._conn.execute(sql_hostname, {"cutoff": cutoff, "n_threshold": n_threshold})
+            for row in cursor_hostname.fetchall():
+                binary, destination, count, win_start, win_end = row
+                if binary and destination:
+                    candidates.append(DetectionCandidate(
+                        binary=binary,
+                        destination=destination,
+                        detection_axis="hostname",
+                        occurrence_count=count,
+                        window_start=float(win_start) if win_start else cutoff,
+                        window_end=float(win_end) if win_end else time.time(),
+                    ))
     except Exception as e:
         import sys
         print(f"[detection_scanner] ERROR running scan query: {e}", file=sys.stderr)
         return []
 
-    candidates = []
-    for row in rows:
-        binary, destination, count, win_start, win_end = row
-        if binary and destination:
-            candidates.append(DetectionCandidate(
-                binary=binary,
-                destination=destination,
-                occurrence_count=count,
-                window_start=float(win_start) if win_start else cutoff,
-                window_end=float(win_end) if win_end else time.time(),
-            ))
+    # Sort descending by occurrence_count
+    candidates.sort(key=lambda c: c.occurrence_count, reverse=True)
 
     return candidates

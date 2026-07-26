@@ -81,6 +81,7 @@ class ProposedRule:
     detection_rule: str        # e.g. 'exact_match_frequency_v1'
     matched_binary: str        # e.g. 'curl'
     matched_destination: str   # dst_ip or hostname_or_sni value
+    detection_axis: str        # 'ip' or 'hostname'
     occurrence_count: int      # count of FLAGs that triggered this
     window_start: float        # Unix timestamp: earliest matching event
     window_end: float          # Unix timestamp: latest matching event
@@ -379,11 +380,11 @@ class Logger:
                     """
                     INSERT OR IGNORE INTO proposed_rules (
                         proposal_id, created_at, detection_rule,
-                        matched_binary, matched_destination,
+                        matched_binary, matched_destination, detection_axis,
                         occurrence_count, window_start, window_end,
                         proposed_yaml_rule, status, reasoning_text,
                         replay_total, replay_changed, permissive_change
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         proposal.proposal_id,
@@ -391,6 +392,7 @@ class Logger:
                         proposal.detection_rule,
                         proposal.matched_binary,
                         proposal.matched_destination,
+                        proposal.detection_axis,
                         proposal.occurrence_count,
                         proposal.window_start,
                         proposal.window_end,
@@ -455,26 +457,42 @@ class Logger:
             import sys
             print(f"[warden:logger] ERROR updating proposal status: {e}", file=sys.stderr)
 
-    def read_events_for_pair(self, binary: str, destination: str) -> list:
+    def read_events_for_pair(self, binary: str, destination: str, detection_axis: str | None = None) -> list:
         """Return all events rows where (binary, destination) matches.
 
-        destination matches against hostname_or_sni first, then dst_ip — the
-        same COALESCE priority used by the detection scanner.
-        Used by dry_run_replay to fetch historical rows for A-of-B calculation.
+        If detection_axis is 'ip', filters strictly by dst_ip.
+        If detection_axis is 'hostname', filters strictly by hostname_or_sni.
+        If None, falls back to matching either (legacy behavior).
         """
         with self._lock:
-            cursor = self._conn.execute(
+            if detection_axis == "ip":
+                sql = """
+                    SELECT * FROM events
+                    WHERE json_extract(parsed_action, '$.binary') = ?
+                      AND json_extract(parsed_action, '$.dst_ip') = ?
+                    ORDER BY id ASC
                 """
-                SELECT * FROM events
-                WHERE
-                    json_extract(parsed_action, '$.binary') = ?
-                    AND (
-                        json_extract(parsed_action, '$.hostname_or_sni') = ?
-                        OR json_extract(parsed_action, '$.dst_ip') = ?
-                    )
-                ORDER BY id ASC
-                """,
-                (binary, destination, destination),
-            )
+                params = (binary, destination)
+            elif detection_axis == "hostname":
+                sql = """
+                    SELECT * FROM events
+                    WHERE json_extract(parsed_action, '$.binary') = ?
+                      AND json_extract(parsed_action, '$.hostname_or_sni') = ?
+                    ORDER BY id ASC
+                """
+                params = (binary, destination)
+            else:
+                sql = """
+                    SELECT * FROM events
+                    WHERE json_extract(parsed_action, '$.binary') = ?
+                      AND (
+                          json_extract(parsed_action, '$.hostname_or_sni') = ?
+                          OR json_extract(parsed_action, '$.dst_ip') = ?
+                      )
+                    ORDER BY id ASC
+                """
+                params = (binary, destination, destination)
+                
+            cursor = self._conn.execute(sql, params)
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, row)) for row in cursor.fetchall()]

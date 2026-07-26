@@ -110,8 +110,10 @@ def replay(
         #    We instantiate it fresh (no mutation of any live inspector).
         trial_inspector = NetworkInspector(network_rules=trial_network_rules)
 
-        # 5. Fetch historical events for this (binary, destination) pair
-        rows = logger.read_events_for_pair(candidate.binary, candidate.destination)
+        # 5. Fetch historical events for this (binary, destination) pair on the specific axis
+        rows = logger.read_events_for_pair(
+            candidate.binary, candidate.destination, detection_axis=candidate.detection_axis
+        )
         replay_total = len(rows)
         if replay_total == 0:
             return 0, 0
