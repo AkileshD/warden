@@ -178,9 +178,11 @@ This is a living list of everything intentionally postponed across the whole pro
 ## 5. Handoff Note (overwrite this every session — do not append, replace)
 
 ```
-Phase 3 Asymmetric Grouping Fix: COMPLETE. The detection scanner now correctly groups network-origin events by destination alone (since network enforcement acts on destination/port, not binary), while retaining (binary, destination) grouping for shell-origin events. Network candidate binary attribution is now resolved best-effort via `action_id` correlation for display purposes. Hardening (CONTRACT docstring, try/except failure isolation) added. All 230 tests pass.
+Phase 3 Asymmetric Grouping Fix: COMPLETE and pushed to origin/main. The detection scanner correctly groups network-origin events by destination alone (since network enforcement acts on destination/port, not binary), while retaining (binary, destination) grouping for shell-origin events. All 230 tests pass.
 
-Next step: Phase 3 Integration. The core pipeline components are tested in isolation, but we need to run an end-to-end demo showing a real proposal generated from live ledger data, processed through the template engine and dry_run_replay, and presented for approval (likely wiring up the `approval_cli` to the daemon core). We also need to re-verify the Phase 2 standalone demo since `policy.yaml` has evolved.
+Next real step: Phase 3 Integration. We need to run an end-to-end demo showing a real proposal generated from live ledger data, processed through the template engine and dry_run_replay, and presented for approval. We also need to re-verify the Phase 2 standalone demo since `policy.yaml` has evolved. 
+
+Explicit Note: No ML/decision-tree work has started yet. It was discussed but deliberately deferred pending real ledger data to ensure we build against real-world patterns, not assumptions.
 
 Findings & Backlog Items (Phase 5):
   - TODO(phase5): Investigate if container directory state (e.g. `mkdir project`) actually persists in the jail container across separate executor invocations, or if it only exists in the daemon's internal `_work_dir` tracking.

@@ -211,3 +211,15 @@ The Warden sidecar uses a Linux feature called `NFQUEUE` and `iptables` to catch
 
 **Technical:** 
 The sidecar's iptables rule `iptables -I OUTPUT -j NFQUEUE --queue-num 0` intercepts all outbound IP traffic from the shared network namespace. When IPC was handled via `AF_UNIX` sockets (Phase 1), the IPC traffic did not traverse the IP stack or the `OUTPUT` chain, so it bypassed the queue. When IPC was moved to UDP (Phase 2), the sidecar's `sendto(host.docker.internal:5005)` system calls generated UDP packets traversing the `OUTPUT` chain, causing them to loop back into the same `NFQUEUE`. The `PacketParser` failed to parse them as HTTP/DNS and they were dropped. To fix this, an explicit exemption rule must be inserted at the top of the chain: `iptables -I OUTPUT -p udp --dport 5005 -j ACCEPT`.
+
+---
+
+### Post-Hoc Binary Correlation (Action ID)
+**Part of:** Phase 3 — `daemon/advisor/detection_scanner.py`
+**Why it came up:** We needed to display which binary (like `curl`) caused a blocked network request when proposing new rules, but network packets themselves don't carry binary names.
+
+**Plain English:** 
+When the agent types `curl evil.com`, two things happen: first, a shell command event is logged. Second, a network packet hits the firewall, and a network event is logged. The network packet only contains IP addresses and ports—it has absolutely no idea that `curl` was the program that sent it. To figure out what program caused the network request, we have to match the two events together after the fact. Since both events were linked by a unique ID (`action_id`) when the daemon generated them, we can use that ID to trace the anonymous network packet back to the shell command that started it. Note: I should have logged this automatically when implementing the fix per the Hard Rules, but failed to do so—a process gap I am acknowledging now!
+
+**Technical:** 
+In `_resolve_network_binary`, we use a SQL `JOIN` on the `action_id` column to correlate the `network` event with its originating `shell_command` event. This differs from the real-time UDP IPC correlation from the earlier Phase 2 fix (which unified the physical ledgers). Here, we are performing *post-hoc* correlation at scan time: the `events` table contains the linked `action_id` in both rows, allowing the scanner to look up `json_extract(e2.parsed_action, '$.binary')` on a best-effort basis for display purposes only, without altering the pure-destination grouping used for threshold detection.
