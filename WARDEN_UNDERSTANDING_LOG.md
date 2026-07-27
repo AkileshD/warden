@@ -184,7 +184,21 @@ The TLS `ClientHello` (which contains the SNI extension) is only sent *after* th
 
 ---
 
-## Phase 3 — (not started)
+## Phase 3 — The Smart Policy Loop
+
+### The Smart Policy Loop (Data Flow & Design)
+**Part of:** Phase 3 — Core Pipeline
+**Why it came up:** We needed a way for Warden to learn from the agent's blocked behavior and suggest new rules, without risking a rogue AI automatically breaking its own security sandbox.
+
+**Plain English:** 
+Phase 3 acts as an analyst, not an enforcer. Unlike Phase 1 and 2 (which actively block dangerous commands or network packets in real time), Phase 3 never blocks anything live. Instead, it reads the historical ledger after the fact, looks for repeated patterns of blocked behavior, and proposes new rules. A human must approve these proposed rules before they become live policy. The data flows through four steps: 1) the scanner counts repeated flags, 2) the template engine writes an explanation using real numbers instead of AI-generated text, 3) the replayer checks how many past events the new rule would have changed, and 4) the proposal waits in a "waiting room" for human approval. We designed it with "asymmetric scrutiny": it's fast and easy for the system to suggest *blocking* something new, but we are very strict about suggesting *allowing* something new. We also learned that grouping data correctly is critical: if we group network events by the program that sent them (which we often don't know) instead of just the destination, or if we mix up IP addresses and domain names, the scanner misses obvious patterns (two bugs we had to fix).
+
+**Technical:**
+The Phase 3 pipeline consists of four main components in data-flow order:
+1. `detection_scanner.py`: Scans the `events` table for repeated `FLAG` verdicts crossing a threshold (e.g., N=10 within 6 hours). It uses plain SQL `GROUP BY` queries instead of ML or LLMs to ensure every detection is deterministic and perfectly auditable. Correct grouping is vital: we had to fix two bugs here by splitting `dst_ip` and `hostname_or_sni` into completely independent axes, and applying asymmetric grouping where `shell_command` events group by `(binary, destination)` but `network` events group by `destination` alone.
+2. `template_engine.py`: Takes the numerical results from the scanner and fills a fixed string template (e.g., "The pattern crossed the threshold {N} times"). We deliberately avoid using an LLM to invent reasoning text, eliminating hallucination risk.
+3. `dry_run_replay.py`: Takes the candidate rule and replays it against the historical ledger events to calculate exact "A-of-B" impact metrics (e.g., "This rule would have changed 12 out of 15 past events").
+4. `proposed_rules` table: An SQLite table acting as a pending-approval waiting room. No rule stored here is live policy; the daemon core ignores this table entirely during real-time enforcement. The CLI or dashboard reads from here to present the proposals to the human administrator.
 
 ---
 

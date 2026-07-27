@@ -819,16 +819,55 @@ Both viewers are strictly read-only clients of the Ledger, per §3 — never all
 
 **Goal:** A general, reusable mechanism for any end user to plug an arbitrary AI agent (their own framework, tool-calling setup, etc.) into Warden's jail with minimal effort.
 
-This is distinct from the Docker jail itself (which is already built and just an environment) and distinct from any one-off test scripts (like the Validation Milestone). This is the reusable "door" into the jail that real users would actually use to integrate their own AI tools safely. 
+### 11.1 Architecture: Single Unix Socket, Multiple Clients
 
-*Open question (do not design yet):* What is the interface for this? Is it a CLI wrapper that injects Warden into existing scripts? A Python SDK? A standard proxy layer? We will resolve this design when Phase 5 begins.
+The daemon exposes **one standing local Unix domain socket** (e.g. `/var/run/warden.sock`). Every external tool that needs to talk to the daemon — the CLI wrapper, the SDK, the approval CLI, the dashboard — is just a client of that socket. There are no competing transport mechanisms; the socket is the single control plane.
 
-**Phase 5 Backlog / Known Issues (from Validation Milestone):**
+**Clients of the socket:**
+
+| Client | Purpose |
+|---|---|
+| `warden exec <cmd>` (CLI wrapper) | Thin command-line shim. Sends a command string over the socket, receives the verdict + execution result. Drop-in replacement for direct shell execution in agent loops. |
+| Python SDK / client library | Programmatic equivalent of the CLI wrapper. A single `warden.exec(cmd)` call that handles the socket protocol internally. For agents written in Python. |
+| Approval CLI / TUI | Human-facing tool for reviewing `proposed_rules`, approving/rejecting proposals, querying the ledger. Reads from the same socket. |
+| Future dashboard | Web-based read-only view of the ledger and pending proposals. Also a client of the same socket (or reads the SQLite file directly for read-only use). |
+
+**WHY Unix socket over HTTP or a message queue:**
+Everything here is same-machine communication. The daemon, the agent, the CLI, and the jail all run on the same host. A Unix socket provides the fastest possible IPC with zero network overhead, zero TLS configuration, and natural filesystem-level access control (socket file permissions). HTTP would add unnecessary serialization ceremony and a TCP stack for localhost traffic. A message queue (Redis, ZMQ, etc.) would add an external dependency for a problem that doesn't need one. This is the same reasoning that drove the Phase 2 sidecar's UDP IPC choice: pick the simplest transport that matches the actual deployment topology.
+
+### 11.2 Scope Boundary — What Warden Can and Cannot Integrate With
+
+**Realistic integration target:** Custom-built agents and direct API-key-based loops where the builder controls the execution path. Examples: a hand-rolled ReAct loop calling Anthropic/Groq directly, a LangChain agent with a custom tool executor, any framework where the developer can replace the "run this shell command" step with `warden exec <cmd>`.
+
+**Not integrable (by design limitation of the product, not Warden):** Sealed consumer products — GitHub Copilot, Antigravity, Cursor's built-in agent, etc. — where the product controls command execution internally and does not expose a hook to replace it. Unless such a product exposes an MCP-based override (or similar plugin mechanism) that lets a custom tool replace their built-in command-execution tool, Warden cannot intercept their commands. This is a limitation of what those products currently allow, not a gap in Warden's design, and should not be treated as a bug to fix later.
+
+### 11.3 Phase 5 Backlog / Known Issues (from Validation Milestone)
+
 - **TODO(phase5): Container directory state persistence.** Investigate if directory state (e.g., `mkdir project`) actually persists in the jail container across separate executor invocations, or if it only exists in the daemon's internal `_work_dir` tracking.
 - **TODO(phase5): Argument ordering bugs.** Investigate potential scrambling of argument order during parsing/execution (e.g., `find` command throwing "paths must precede expression"). The `ShellParser` and/or `RealExecutor` may be incorrectly ordering flags vs positional args when reassembling commands.
 ---
 
-## 12. Stack Decisions
+## 12. Phase 6 — Packaging & Distribution (future, not started)
+
+**Goal:** Make Warden installable and runnable by developers who aren't the author. Currently, Warden is a development-time tool that requires Docker Desktop as a hard dependency — the jail, the sidecar, and the inter-container networking all run on Docker.
+
+### 12.1 Current Decision: Ship as "Requires Docker"
+
+For v1.0, Warden ships as a developer tool that explicitly requires Docker Desktop (macOS/Linux) or Docker Engine (Linux). This is an acceptable dependency for the target audience (developers building custom AI agent loops), and avoids the significant engineering cost of replacing Docker's container isolation with native OS sandboxing.
+
+### 12.2 Deferred: No-Docker-Required Packaging
+
+Replacing Docker with native OS sandboxing (Linux namespaces + seccomp, macOS `sandbox-exec`, etc.) is explicitly deferred as its own future milestone. This would eliminate the Docker Desktop dependency entirely, making Warden a standalone binary/package that creates its own sandbox.
+
+**Note:** This milestone may fold into the already-planned v2.0 eBPF/Rust migration (see §13 Stack Decisions). Both efforts would remove the Docker Desktop dependency as a side effect, even though they are motivated differently:
+- **v2.0 eBPF/Rust migration** is motivated by *performance* (moving network enforcement off the NFQUEUE hot path).
+- **No-Docker packaging** is motivated by *distribution* (reducing install friction for end users).
+
+If both happen, they should be coordinated to avoid building a native sandbox layer in Python only to rewrite it in Rust immediately after. Do not design the packaging mechanism itself until this work is actually scheduled.
+
+---
+
+## 13. Stack Decisions
 
 | Layer | Choice | Status | Reasoning |
 |---|---|---|---|
@@ -841,11 +880,11 @@ This is distinct from the Docker jail itself (which is already built and just an
 | Dashboard client | Undecided — plain local web app reading SQLite via a small API, or a TUI | Not started | Decide after Phase 1 demo, based on real usage, not speculatively. |
 | Jail | **Docker**, read-only filesystem, stripped permissions | Dockerfile written, build pending | Not Warden's job to reinvent — Docker is the room, Warden is the guard. |
 
-**Explicit non-decision (revisit later, don't decide now):** whether the daemon's control interface (for CLI to issue commands like reload-policy) is a Unix socket, a lightweight HTTP API, or a message queue. Any of these satisfy the "daemon + thin clients" contract — pick when the CLI is actually being built, not before.
+**Resolved:** The daemon's control interface is a **Unix domain socket** (see §11.1). This was previously an explicit non-decision; it was resolved when the Phase 5 architecture was designed. The reasoning (same-machine IPC, no external dependencies, filesystem-level access control) is documented there.
 
 ---
 
-## 13. Dev Environment (Mac)
+## 14. Dev Environment (Mac)
 
 - Core logic and policy rules are written and unit-tested directly on macOS with standard tools — no special setup needed for Phase 1 development.
 - Integration testing (the actual jail behavior) runs through **Docker Desktop**, which transparently runs a lightweight Linux VM on macOS.
@@ -853,7 +892,7 @@ This is distinct from the Docker jail itself (which is already built and just an
 
 ---
 
-## 14. Open Source Plan
+## 15. Open Source Plan
 
 Sequence (do not reorder):
 1. Working Phase 1 demo, rehearsed, recorded.

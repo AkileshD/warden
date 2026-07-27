@@ -157,21 +157,23 @@ warden/
 This is a living list of everything intentionally postponed across the whole project. Update it any time something gets deferred or an item gets picked up and resolved (move resolved items to a "Resolved" subsection with the date/commit, don't delete them).
 
 - **Phase 2.5:** Stateless SNI filtering fix (needs conntrack) — `WARDEN_SPEC.md §7.3`.
-- **v2.0:** eBPF/Rust migration for network interceptor — `WARDEN_SPEC.md §12` (deferred production path).
+- **v2.0:** eBPF/Rust migration for network interceptor — `WARDEN_SPEC.md §13` (deferred production path).
 - **Phase 5:** Directory-state inconsistency across agent turns (`./project` appeared to vanish) — found during validation milestone.
 - **Phase 5:** Argument-order scrambling in commands like `find` ("paths must precede expression") — found during validation milestone.
-- **Phase 5:** General agent integration layer design not yet decided (CLI wrapper vs SDK vs other).
 - **Phase 3:** FLAG-only ML inspector — named idea, not designed or built. See `WARDEN_SPEC.md §9`.
 - **Phase 3:** LLM-based explanation generation for complex multi-factor patterns — open question, not committed. Revisit only if templating proves insufficient.
 - **Phase 3 detection refinement (near-term):** CIDR-block clustering — group by /24 instead of requiring exact `dst_ip` match for the N=10/T=6h detection rule. Add once the exact-match rule has been validated against real ledger data and proves too coarse in practice (e.g. exfil to adjacent IPs in the same subnet not being caught). See `WARDEN_SPEC.md §9`.
 - **Phase 3 detection refinement (longer-term, not scheduled):** Rate-of-change / burst detection relative to a rolling historical baseline, instead of a flat threshold. Deferred until enough historical ledger data exists for a meaningful baseline to be computed — meaningless to build before real usage data is available. See `WARDEN_SPEC.md §9`.
-- **Daemon CLI:** Control interface protocol (Unix socket vs HTTP vs message queue) — explicit non-decision, deferred until CLI is built.
+- **Phase 6:** Packaging & distribution — ship as "requires Docker" for v1.0. No-Docker-required native OS sandboxing deferred. See `WARDEN_SPEC.md §12`.
+- **Phase 2 demo script (`demo/run_phase2_demo.py`) is stale:** Predates the UDP IPC fix, assumes the sidecar writes directly to a local SQLite file instead of sending events via UDP to a running host daemon. Network blocking itself is unaffected and verified working; only the demo's own ledger verification step is broken. Needs the demo script updated to start the host daemon (or otherwise satisfy the UDP IPC handoff) before it can show a clean ledger read.
 - **Jail Base Image:** `requests` package missing from jail image — deliberate decision, not an oversight (declined to expand attack surface).
 
 ### Resolved
 
 - **Phase 3 Prerequisite:** Two-Ledgers Gap + Correlation Gap. Fixed via UDP IPC from sidecar to host daemon, using a pre-shared token and loopback socket, enforcing a single-writer pattern and resolving macOS virtiofs `EOPNOTSUPP` and WAL split-brain issues. Sidecar IPTables modified to exempt its own UDP IPC packets from NFQUEUE interception. See `WARDEN_SPEC.md §7.4`.
 - **Phase 3 Tier 2 staging format/location:** Resolved. `proposed_rules` table in the daemon's existing SQLite DB — no new file, no new writer, consistent with the single-writer principle. Schema drafted in `WARDEN_SPEC.md §9`.
+- **Phase 5 agent integration layer design (2026-07-27):** Resolved. Hybrid architecture: single Unix domain socket exposed by the daemon, with CLI wrapper (`warden exec <cmd>`), Python SDK, approval CLI, and future dashboard all as clients of that socket. Scope boundary documented: targets custom-built agents with developer-controlled execution paths; sealed consumer products are not integrable without MCP-based overrides. See `WARDEN_SPEC.md §11`.
+- **Daemon CLI control interface protocol (2026-07-27):** Resolved. Unix domain socket — same reasoning as above (same-machine IPC, zero external dependencies, filesystem-level access control). See `WARDEN_SPEC.md §11.1`.
 
 ---
 
