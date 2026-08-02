@@ -158,7 +158,6 @@ This is a living list of everything intentionally postponed across the whole pro
 
 - **Phase 2.5:** Stateless SNI filtering fix (needs conntrack) — `WARDEN_SPEC.md §7.3`.
 - **v2.0:** eBPF/Rust migration for network interceptor — `WARDEN_SPEC.md §13` (deferred production path).
-- **Phase 5:** Directory-state inconsistency across agent turns (`./project` appeared to vanish) — found during validation milestone.
 - **Phase 5:** Argument-order scrambling in commands like `find` ("paths must precede expression") — found during validation milestone.
 - **Phase 3:** FLAG-only ML inspector — named idea, not designed or built. See `WARDEN_SPEC.md §9`.
 - **Phase 3:** LLM-based explanation generation for complex multi-factor patterns — open question, not committed. Revisit only if templating proves insufficient.
@@ -174,21 +173,28 @@ This is a living list of everything intentionally postponed across the whole pro
 - **Phase 3 Tier 2 staging format/location:** Resolved. `proposed_rules` table in the daemon's existing SQLite DB — no new file, no new writer, consistent with the single-writer principle. Schema drafted in `WARDEN_SPEC.md §9`.
 - **Phase 5 agent integration layer design (2026-07-27):** Resolved. Hybrid architecture: single Unix domain socket exposed by the daemon, with CLI wrapper (`warden exec <cmd>`), Python SDK, approval CLI, and future dashboard all as clients of that socket. Scope boundary documented: targets custom-built agents with developer-controlled execution paths; sealed consumer products are not integrable without MCP-based overrides. See `WARDEN_SPEC.md §11`.
 - **Daemon CLI control interface protocol (2026-07-27):** Resolved. Unix domain socket — same reasoning as above (same-machine IPC, zero external dependencies, filesystem-level access control). See `WARDEN_SPEC.md §11.1`.
+- **Phase 5 — Directory-state inconsistency in DockerJailExecutor (2026-08-02):** Resolved. Root cause was NOT container lifecycle (jail runs `sleep infinity`, exec attaches to the same process) and NOT bind-mount persistence (`mkdir` inside `/workspace` writes to the host bind-mount and persists across restarts). The real bug was a fragile string-prefix match in `DockerJailExecutor._get_container_workdir()` (`demo/run_agent_test.py`) that tested `rel_path.parts[0] == "project"` — silently falling back to `/workspace` for any path outside `./project/`, including `/tmp` and the repo root itself. Fix: replaced with `pathlib.relative_to(host_repo_root / "project")`, raising `WorkdirOutOfScopeError` (new typed exception) instead of silently defaulting. Error is caught in `run()` and returned as a visible `ExecutionResult`. Decision: `/tmp` is explicitly rejected (container-side tmpfs, no host bind-mount, no valid translation). 7 new unit tests in `tests/test_docker_jail_executor.py`. Total test count: 237.
 
 ---
 
 ## 5. Handoff Note (overwrite this every session — do not append, replace)
 
 ```
-Phase 3 Asymmetric Grouping Fix: COMPLETE and pushed to origin/main. The detection scanner correctly groups network-origin events by destination alone (since network enforcement acts on destination/port, not binary), while retaining (binary, destination) grouping for shell-origin events. All 230 tests pass.
+DockerJailExecutor workdir-translation fix: COMPLETE. 237 tests passing.
 
-Next real step: Phase 3 Integration. We need to run an end-to-end demo showing a real proposal generated from live ledger data, processed through the template engine and dry_run_replay, and presented for approval. We also need to re-verify the Phase 2 standalone demo since `policy.yaml` has evolved. 
+Root cause of the Phase 5 directory-state TODO was a path-translation bug in
+demo/run_agent_test.py (DockerJailExecutor._get_container_workdir), not container
+lifecycle or bind-mount persistence. Fixed via pathlib.relative_to() + typed
+WorkdirOutOfScopeError. 7 new tests in tests/test_docker_jail_executor.py.
+Committed and pushed to origin/main.
 
-Explicit Note: No ML/decision-tree work has started yet. It was discussed but deliberately deferred pending real ledger data to ensure we build against real-world patterns, not assumptions.
+Remaining open work from the previous handoff note:
+- Phase 3 Integration end-to-end demo (real proposal from live ledger data,
+  through template engine and dry_run_replay, presented via approval_cli) — not yet done.
+- Phase 2 standalone demo (demo/run_phase2_demo.py) still stale against UDP IPC fix.
+- Argument-order scrambling in commands like `find` — still open Phase 5 TODO.
 
-Findings & Backlog Items (Phase 5):
-  - TODO(phase5): Investigate if container directory state (e.g. `mkdir project`) actually persists in the jail container across separate executor invocations, or if it only exists in the daemon's internal `_work_dir` tracking.
-  - TODO(phase5): Investigate potential argument ordering bugs (e.g. `find` throwing "paths must precede expression"). The `ShellParser` and/or `RealExecutor` may be incorrectly ordering flags vs positional args when reassembling commands.
+No ML/decision-tree work started. Deliberately deferred pending real ledger data.
 ```
 
 ---

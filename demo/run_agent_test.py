@@ -34,6 +34,23 @@ from daemon.executors.base import Executor, ExecutionResult
 from daemon.parser.shell_parser import ParsedAction
 from daemon.inspectors.base import Verdict
 
+class WorkdirOutOfScopeError(Exception):
+    """
+    Raised when DockerJailExecutor cannot translate the daemon's host-side
+    _work_dir into a path inside the jail container's bind-mounted project root.
+
+    The container mounts ./project (relative to host_repo_root) as /workspace.
+    Any _work_dir that is outside host_repo_root/project has no valid
+    container equivalent and MUST NOT silently fall back to /workspace —
+    that would cause commands to run in the wrong directory with no error
+    surfaced, masking real state divergence.
+
+    This includes /tmp: the jail's /tmp is a container-side tmpfs mounted by
+    Docker at runtime; it has no bind-mount from the host side, so a host
+    path of /tmp/... has no valid translation into the container.
+    """
+
+
 class DockerJailExecutor(Executor):
     """
     A throwaway executor that runs commands inside the jail via docker-compose exec.
@@ -44,27 +61,58 @@ class DockerJailExecutor(Executor):
         self._work_dir = Path(work_dir).resolve() if work_dir else self._host_repo_root
 
     def _get_container_workdir(self) -> str:
-        """Translate the host's absolute path to the container's absolute path."""
+        """
+        Translate the daemon's host-side _work_dir to the equivalent absolute
+        path inside the jail container.
+
+        The container bind-mount is: ./project (host) → /workspace (container),
+        as declared in docker-compose.yml. This is the ONLY writable path the
+        agent can reach inside the jail.
+
+        WHY pathlib.relative_to() instead of string prefix matching:
+        relative_to() is path-boundary-aware. A string startswith("project/")
+        check would silently pass a path like "projects/foo" whose first component
+        shares the prefix but is NOT a child of the project directory. pathlib
+        raises ValueError on a non-child, which we convert to WorkdirOutOfScopeError.
+
+        WHY /tmp is rejected: the jail's /tmp is a tmpfs Docker mounts at runtime
+        (docker-compose.yml: tmpfs: [/tmp]). It is not a bind-mount from the host.
+        A host path of /tmp/... has no corresponding container path — there is
+        nothing to translate. Rejecting it here prevents a silent /workspace
+        fallback that would mask real state divergence.
+        """
+        # The host-side root of the bind-mount: repo_root/project → /workspace
+        host_project_root = self._host_repo_root / "project"
         try:
-            rel_path = self._work_dir.relative_to(self._host_repo_root)
-            # The container's base is /workspace, which maps to repo_root/project
-            # Wait, repo_root is the root of the Warden repo. 
-            # In docker-compose.yml, the volume is mounted as: ./project:/workspace
-            # Let's verify that. If ./project mounts to /workspace, then repo_root/project == /workspace
-            if rel_path.parts and rel_path.parts[0] == "project":
-                # It's inside project/
-                inner_path = rel_path.relative_to("project")
-                return f"/workspace/{inner_path}".rstrip("/")
-            else:
-                # If the daemon's workdir is outside project (e.g., repo_root itself), 
-                # fallback to /workspace to avoid container chdir errors.
-                return "/workspace"
+            rel = self._work_dir.relative_to(host_project_root)
         except ValueError:
+            raise WorkdirOutOfScopeError(
+                f"Daemon _work_dir {str(self._work_dir)!r} is outside the jail's "
+                f"bind-mounted project root ({host_project_root}). "
+                f"The container mount is ./project:/workspace — workdirs outside "
+                f"this tree (including /tmp) have no valid container translation."
+            )
+        # rel is Path('.') when _work_dir == host_project_root exactly
+        if rel == Path("."):
             return "/workspace"
+        return f"/workspace/{rel}"
 
     def run(self, action: ParsedAction, verdict: Verdict) -> ExecutionResult:
-        # Pass --workdir to maintain the daemon's internal cd state, mapped to container
-        container_workdir = self._get_container_workdir()
+        # Pass --workdir to maintain the daemon's internal cd state, mapped to container.
+        # WorkdirOutOfScopeError means the daemon's _work_dir has diverged outside the
+        # bind-mounted project root — surface it as a visible error ExecutionResult so
+        # it lands in the ledger, rather than letting it disappear into the generic
+        # Exception catch-all below.
+        try:
+            container_workdir = self._get_container_workdir()
+        except WorkdirOutOfScopeError as e:
+            return ExecutionResult(
+                stdout="",
+                stderr=f"warden: workdir translation failed — {e}",
+                exit_code=1,
+                was_real=True,
+                was_fabricated=False,
+            )
         
         # Bridge translation: the parser resolves paths on the host, but the container
         # mounts the host's 'project/' to '/workspace/'. We must translate any explicit
