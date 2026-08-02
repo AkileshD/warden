@@ -165,7 +165,30 @@ warden/
 
 ---
 
-## 4. Backlog / Next Steps
+## 4. Roadmap — Next Steps
+
+Near/mid-term:
+- Phase 2.5 — Stateful SNI filtering (hostname-based network ALLOW rules)
+- Phase 3 integration — end-to-end demo with synthetic seed data (core already built)
+- Phase 5 Part 2 — Python SDK, Approval CLI, Dashboard client (deferred, confirmed still required)
+- Phase 4 — Minimalist UI/dashboard (needs design/ mockup gate first)
+- Phase 6 — Packaging/distribution
+
+## Backlog
+
+- find/cat argument-ordering bug — noticed during live testing, undiagnosed
+- demo/run_phase2_demo.py — stale, hardcodes pre-UDP-IPC ledger path
+- Three core docs (spec/build-context/understanding-log) — gitignore status unresolved, still tracked in git history
+- Phase 3 — FLAG-only ML inspector — named idea, not designed or built
+- Phase 3 — LLM-based explanation generation — open question, revisit only if templating proves insufficient
+- Phase 3 — CIDR-block clustering (/24 grouping) — add once exact-match rule proves too coarse against real data
+- Phase 3 — rate-of-change/burst detection — longer-term refinement
+- Control socket concurrency — lock added defensively, not yet stress-tested under real concurrent load
+- No formal versioning/migration story for policy.yaml or the SQLite schema yet
+
+## Old Backlog / Next Steps (Superseded)
+
+*Superseded — see 'Roadmap — Next Steps' / 'Backlog' at top of doc.*
 
 This is a living, prioritized menu of the open state across the project:
 
@@ -260,3 +283,8 @@ Phase 3 (`WARDEN_SPEC.md §8`, the Smart Policy Loop) will introduce a **separat
 
 ---
 
+## Long-Term / Stretch (explicitly parked, not scoped)
+- v2.0 — Rust + eBPF/XDP network enforcement (replaces NFQUEUE sidecar; gated behind Phases 1-4 complete) — cross-reference WARDEN_SPEC.md §7.5/§13
+- No-Docker native OS sandboxing (Linux namespaces + seccomp, macOS sandbox-exec) — may fold into the eBPF migration
+- Transparent OS-level interception (PATH shims or ptrace) — agent talks to what it thinks is a normal shell, no explicit warden exec calls
+- Control socket auth (token-based, mirroring sidecar's pattern) — deferred, currently local-only/file-permission-protected
