@@ -823,27 +823,41 @@ Both viewers are strictly read-only clients of the Ledger, per §3 — never all
 
 The daemon exposes **one standing local Unix domain socket** (e.g. `/var/run/warden.sock`). Every external tool that needs to talk to the daemon — the CLI wrapper, the SDK, the approval CLI, the dashboard — is just a client of that socket. There are no competing transport mechanisms; the socket is the single control plane.
 
-**Clients of the socket:**
+**Part 1 Scope: Immediate Execution Plane**
+- **`warden daemon start`**: The single bootstrap command. It runs `docker-compose up -d` (jail + sidecar) AND starts the daemon's socket listener, in that order. One command brings up the entire environment.
+- **`warden exec <cmd>` (CLI wrapper)**: Thin command-line shim. Sends a command string over the socket, receives the verdict + execution result.
+- **`demo/run_agent_test.py`**: The agent test harness loop is migrated to call through this socket rather than importing `DockerJailExecutor` in-process. 
+*(Note: Transparent/automatic OS-level interception like PATH shims or ptrace are explicitly out of scope for this build and deferred as a future stretch goal).*
 
-| Client | Purpose |
-|---|---|
-| `warden exec <cmd>` (CLI wrapper) | Thin command-line shim. Sends a command string over the socket, receives the verdict + execution result. Drop-in replacement for direct shell execution in agent loops. |
-| Python SDK / client library | Programmatic equivalent of the CLI wrapper. A single `warden.exec(cmd)` call that handles the socket protocol internally. For agents written in Python. |
-| Approval CLI / TUI | Human-facing tool for reviewing `proposed_rules`, approving/rejecting proposals, querying the ledger. Reads from the same socket. |
-| Future dashboard | Web-based read-only view of the ledger and pending proposals. Also a client of the same socket (or reads the SQLite file directly for read-only use). |
+**Part 2 Scope: Future Developer & Review Plane (DEFERRED)**
+- **Python SDK / client library**: Programmatic equivalent of the CLI wrapper. A single `warden.exec(cmd)` call that handles the socket protocol internally.
+- **Approval CLI / TUI**: Human-facing tool for reviewing `proposed_rules` and querying the ledger.
+- **Future dashboard**: Web-based read-only view of the ledger and pending proposals.
+*These are real, planned components and must be built eventually, but they are explicitly excluded from Part 1 to maintain focus on the execution path.*
+
+### 11.2 Socket Protocol & Switchboard Routing
+
+The socket reads a JSON payload containing the command and an `executor` field. This acts as a switchboard:
+- `executor="docker_jail"` (default): Routes the command to the `DockerJailExecutor` (the primary sandboxed path).
+- `executor="host"`: Routes the command to the `RealExecutor` on the host OS. (Wired for completeness, but not expected to see real use yet).
+
+### 11.3 Authentication (Phase 5 v1)
+
+**None for this pass.** The socket file's OS-level permissions are the only access control.
+*TODO(phase5): If/when this needs to be exposed beyond local processes, adopt the token-auth precedent already established by the sidecar's UDP IPC listener (`ipc_listener.py`).*
 
 **WHY Unix socket over HTTP or a message queue:**
 Everything here is same-machine communication. The daemon, the agent, the CLI, and the jail all run on the same host. A Unix socket provides the fastest possible IPC with zero network overhead, zero TLS configuration, and natural filesystem-level access control (socket file permissions). HTTP would add unnecessary serialization ceremony and a TCP stack for localhost traffic. A message queue (Redis, ZMQ, etc.) would add an external dependency for a problem that doesn't need one. This is the same reasoning that drove the Phase 2 sidecar's UDP IPC choice: pick the simplest transport that matches the actual deployment topology.
 
-### 11.2 Scope Boundary — What Warden Can and Cannot Integrate With
+### 11.4 Scope Boundary — What Warden Can and Cannot Integrate With
 
 **Realistic integration target:** Custom-built agents and direct API-key-based loops where the builder controls the execution path. Examples: a hand-rolled ReAct loop calling Anthropic/Groq directly, a LangChain agent with a custom tool executor, any framework where the developer can replace the "run this shell command" step with `warden exec <cmd>`.
 
 **Not integrable (by design limitation of the product, not Warden):** Sealed consumer products — GitHub Copilot, Antigravity, Cursor's built-in agent, etc. — where the product controls command execution internally and does not expose a hook to replace it. Unless such a product exposes an MCP-based override (or similar plugin mechanism) that lets a custom tool replace their built-in command-execution tool, Warden cannot intercept their commands. This is a limitation of what those products currently allow, not a gap in Warden's design, and should not be treated as a bug to fix later.
 
-### 11.3 Phase 5 Backlog / Known Issues (from Validation Milestone)
+### 11.5 Phase 5 Backlog / Known Issues (from Validation Milestone)
 
-- **TODO(phase5): Container directory state persistence.** Investigate if directory state (e.g., `mkdir project`) actually persists in the jail container across separate executor invocations, or if it only exists in the daemon's internal `_work_dir` tracking.
+- **RESOLVED(phase5): Container directory state persistence.** State *does* persist correctly via the bind mount; the reported bug was actually a string-prefix path-translation error in Python (`DockerJailExecutor`), now fixed. See `WARDEN_BUILD_CONTEXT.md §4` (Resolved) for full detail.
 - **TODO(phase5): Argument ordering bugs.** Investigate potential scrambling of argument order during parsing/execution (e.g., `find` command throwing "paths must precede expression"). The `ShellParser` and/or `RealExecutor` may be incorrectly ordering flags vs positional args when reassembling commands.
 ---
 

@@ -45,6 +45,7 @@ from .executors.real_executor import RealExecutor
 from .executors.fake_executor import FakeExecutor
 from .ledger.logger import Logger, LedgerEvent
 from .ipc_listener import IPCListener
+from .control_socket import ControlSocket
 
 
 @dataclass
@@ -125,6 +126,10 @@ class WardenDaemon:
         # Start the IPC listener for network events from the sidecar
         self._ipc_listener = IPCListener(logger=self._logger, token_path=self._ipc_token_path)
         self._ipc_listener.start()
+        
+        # Start the Unix control socket listener
+        self._control_socket = ControlSocket(self)
+        self._control_socket.start()
 
     # ------------------------------------------------------------------
     # Public API
@@ -196,6 +201,7 @@ class WardenDaemon:
 
     def close(self) -> None:
         """Clean shutdown — close database connections and stop threads."""
+        self._control_socket.stop()
         self._ipc_listener.stop()
         self._logger.close()
 

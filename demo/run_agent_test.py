@@ -34,150 +34,7 @@ from daemon.executors.base import Executor, ExecutionResult
 from daemon.parser.shell_parser import ParsedAction
 from daemon.inspectors.base import Verdict
 
-class WorkdirOutOfScopeError(Exception):
-    """
-    Raised when DockerJailExecutor cannot translate the daemon's host-side
-    _work_dir into a path inside the jail container's bind-mounted project root.
-
-    The container mounts ./project (relative to host_repo_root) as /workspace.
-    Any _work_dir that is outside host_repo_root/project has no valid
-    container equivalent and MUST NOT silently fall back to /workspace —
-    that would cause commands to run in the wrong directory with no error
-    surfaced, masking real state divergence.
-
-    This includes /tmp: the jail's /tmp is a container-side tmpfs mounted by
-    Docker at runtime; it has no bind-mount from the host side, so a host
-    path of /tmp/... has no valid translation into the container.
-    """
-
-
-class DockerJailExecutor(Executor):
-    """
-    A throwaway executor that runs commands inside the jail via docker-compose exec.
-    This bridges Phase 1 (host-based shell interception) and Phase 2 (sidecar network interception).
-    """
-    def __init__(self, host_repo_root: Path, work_dir: Optional[Path] = None) -> None:
-        self._host_repo_root = Path(host_repo_root).resolve()
-        self._work_dir = Path(work_dir).resolve() if work_dir else self._host_repo_root
-
-    def _get_container_workdir(self) -> str:
-        """
-        Translate the daemon's host-side _work_dir to the equivalent absolute
-        path inside the jail container.
-
-        The container bind-mount is: ./project (host) → /workspace (container),
-        as declared in docker-compose.yml. This is the ONLY writable path the
-        agent can reach inside the jail.
-
-        WHY pathlib.relative_to() instead of string prefix matching:
-        relative_to() is path-boundary-aware. A string startswith("project/")
-        check would silently pass a path like "projects/foo" whose first component
-        shares the prefix but is NOT a child of the project directory. pathlib
-        raises ValueError on a non-child, which we convert to WorkdirOutOfScopeError.
-
-        WHY /tmp is rejected: the jail's /tmp is a tmpfs Docker mounts at runtime
-        (docker-compose.yml: tmpfs: [/tmp]). It is not a bind-mount from the host.
-        A host path of /tmp/... has no corresponding container path — there is
-        nothing to translate. Rejecting it here prevents a silent /workspace
-        fallback that would mask real state divergence.
-        """
-        # The host-side root of the bind-mount: repo_root/project → /workspace
-        host_project_root = self._host_repo_root / "project"
-        try:
-            rel = self._work_dir.relative_to(host_project_root)
-        except ValueError:
-            raise WorkdirOutOfScopeError(
-                f"Daemon _work_dir {str(self._work_dir)!r} is outside the jail's "
-                f"bind-mounted project root ({host_project_root}). "
-                f"The container mount is ./project:/workspace — workdirs outside "
-                f"this tree (including /tmp) have no valid container translation."
-            )
-        # rel is Path('.') when _work_dir == host_project_root exactly
-        if rel == Path("."):
-            return "/workspace"
-        return f"/workspace/{rel}"
-
-    def run(self, action: ParsedAction, verdict: Verdict) -> ExecutionResult:
-        # Pass --workdir to maintain the daemon's internal cd state, mapped to container.
-        # WorkdirOutOfScopeError means the daemon's _work_dir has diverged outside the
-        # bind-mounted project root — surface it as a visible error ExecutionResult so
-        # it lands in the ledger, rather than letting it disappear into the generic
-        # Exception catch-all below.
-        try:
-            container_workdir = self._get_container_workdir()
-        except WorkdirOutOfScopeError as e:
-            return ExecutionResult(
-                stdout="",
-                stderr=f"warden: workdir translation failed — {e}",
-                exit_code=1,
-                was_real=True,
-                was_fabricated=False,
-            )
-        
-        # Bridge translation: the parser resolves paths on the host, but the container
-        # mounts the host's 'project/' to '/workspace/'. We must translate any explicit
-        # relative paths so they work inside the container.
-        translated_args = []
-        for arg in action.args:
-            if arg.startswith("./project/"):
-                translated_args.append(arg.replace("./project/", "./", 1))
-            else:
-                translated_args.append(arg)
-                
-        # Use shell=False pattern: pass binary and args directly without sh -c
-        cmd = ["docker-compose", "exec", "-T", "--workdir", container_workdir, "jail", action.binary] + action.flags + translated_args
-        
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            
-            if action.redirect_target:
-                mode = "a" if action.redirect_append else "w"
-                try:
-                    # Write to the host path (WardenDaemon resolves this as absolute host path)
-                    # Because /workspace is volume mapped to ./project, writing to the host
-                    # path here correctly synchronizes into the container!
-                    with open(action.redirect_target, mode) as f:
-                        f.write(result.stdout)
-                    stdout_result = ""
-                except Exception as e:
-                    return ExecutionResult(
-                        stdout="",
-                        stderr=f"warden: failed to write redirection to {action.redirect_target}: {e}",
-                        exit_code=1,
-                        was_real=True,
-                        was_fabricated=False,
-                    )
-            else:
-                stdout_result = result.stdout
-
-            return ExecutionResult(
-                stdout=stdout_result,
-                stderr=result.stderr,
-                exit_code=result.returncode,
-                was_real=True,
-                was_fabricated=False,
-            )
-        except subprocess.TimeoutExpired:
-            return ExecutionResult(
-                stdout="",
-                stderr="Timeout inside jail",
-                exit_code=124,
-                was_real=True,
-                was_fabricated=False,
-            )
-        except Exception as e:
-            return ExecutionResult(
-                stdout="",
-                stderr=f"Jail execution error: {e}",
-                exit_code=1,
-                was_real=True,
-                was_fabricated=False,
-            )
+from daemon.executors.docker_jail_executor import DockerJailExecutor
 
 def main():
     api_key = os.environ.get("GROQ_API_KEY")
@@ -187,42 +44,16 @@ def main():
         sys.exit(1)
 
     print("--- Validation Milestone: Real Agent Test ---")
+    print("NOTE: This script now acts as a pure client.")
+    print("You MUST start the daemon in a separate terminal first:")
+    print("  ./warden daemon start\n")
     
-    # Ensure containers are up
-    print("> docker-compose up -d")
-    subprocess.run(["docker-compose", "up", "-d"], check=True)
-    
-    # Setup Warden
-    repo_root = Path(__file__).parent.parent
-    policy_path = repo_root / "daemon" / "rules" / "policy.yaml"
-    ledger_path = repo_root / "warden_demo.db"
-    
-    print("\nInitializing WardenDaemon with DockerJailExecutor...")
-    daemon = WardenDaemon(
-        policy_path=policy_path,
-        ledger_path=ledger_path,
-        # WHY repo_root (not repo_root / "project"): daemon._work_dir is used by
-        # ShellParser and CommandInspector to resolve policy path globs. The ALLOW
-        # rule uses path_scope=["./project/**"], which expands relative to work_dir.
-        # If work_dir were repo_root/project, that glob would expand to
-        # repo_root/project/project/** (nonexistent), breaking the ALLOW rule.
-        # DockerJailExecutor gets its own work_dir set explicitly below.
-        work_dir=repo_root,
-        session_id="real-agent-test"
-    )
-    
-    # The Bridging Trick: override the real executor
-    # WHY work_dir=repo_root / "project": DockerJailExecutor._work_dir is used
-    # only for container path translation (host path → /workspace/...). It must
-    # start inside the bind-mounted project root so _get_container_workdir() can
-    # call relative_to(host_repo_root / "project") without raising
-    # WorkdirOutOfScopeError on the very first command. The daemon's own _work_dir
-    # (above) stays at repo_root for policy matching — these two serve different
-    # purposes and legitimately hold different paths at initialization.
-    daemon._real_executor = DockerJailExecutor(
-        host_repo_root=repo_root,
-        work_dir=repo_root / "project",
-    )
+    # Check if daemon is running by testing the socket
+    sock_path = Path("/tmp/warden_ipc/warden_control.sock")
+    if not sock_path.exists():
+        print("Error: Warden daemon is not running.")
+        print("Please run './warden daemon start' in another terminal before running this script.")
+        sys.exit(1)
     
     client = openai.OpenAI(
         api_key=api_key,
@@ -270,25 +101,27 @@ def main():
             
         print(f"Agent decided: {raw_cmd}")
         
-        # Pass to Warden
-        result = daemon.process(raw_cmd)
+        # Pass to Warden via CLI
+        warden_path = Path(__file__).parent.parent / "warden"
+        result = subprocess.run(
+            [str(warden_path), "exec", raw_cmd],
+            capture_output=True,
+            text=True
+        )
         
-        full_output = ""
-        for o in result.outcomes:
-            full_output += o.execution_result.stdout
-            if o.execution_result.stderr:
-                full_output += o.execution_result.stderr
+        full_output = result.stdout
+        if result.stderr:
+            full_output += result.stderr
                 
-        if result.exit_code != 0:
-            full_output += f"\n[Exit code: {result.exit_code}]"
+        if result.returncode != 0:
+            full_output += f"\n[Exit code: {result.returncode}]"
             
         print(f"Shell output:\n{full_output.strip() or '<empty>'}")
         
         messages.append({"role": "assistant", "content": raw_cmd})
         messages.append({"role": "user", "content": f"Output:\n{full_output}\nWhat is your next command?"})
         
-    daemon.close()
-    print("\nAgent test complete. Check warden_demo.db for the generated events.")
+    print("\nAgent test complete. Check warden.db (via sqlite3) for the generated events.")
 
 if __name__ == "__main__":
     main()

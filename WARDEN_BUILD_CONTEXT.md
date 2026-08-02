@@ -111,6 +111,17 @@ warden/
 | `daemon/advisor/dry_run_replay.py` | done | Replays historical events against candidate rules. Strictly filters events by the specific `detection_axis` (IP or hostname) to ensure accurate A-of-B counts. |
 | `tests/test_phase3_advisor.py` | done | 35 tests verifying all Phase 3 components, including strict isolation of axes during detection and replay. |
 
+### Phase 5 — Agent Integration Layer (Part 1) ✅ COMPLETE
+
+*Note: Active build of Part 1 (Unix socket control plane + switchboard routing + `warden daemon start` + CLI wrapper) completed on 2026-08-02. The SDK, Approval CLI, and Dashboard are explicitly deferred to Part 2.*
+
+| Component | Status | Notes |
+|---|---|---|
+| `warden daemon start` | done | Bootstrap command to run `docker-compose up -d` (jail+sidecar) and start the socket listener sequentially. |
+| Unix Socket + Switchboard | done | Single control plane. Routes requests via `executor` field (`docker_jail` vs `host`). Auth is OS-level only for now. |
+| `warden exec <cmd>` | done | Thin CLI shim over the socket. |
+| `demo/run_agent_test.py` migration | done | Update the existing agent harness to call the socket instead of importing `DockerJailExecutor` in-process. |
+
 ### Phase 1 — Smart Command Deception ✅ COMPLETE
 
 | Component | Status | Notes |
@@ -145,8 +156,8 @@ warden/
 
 | Component | Status | Notes |
 |---|---|---|
-| `demo/run_agent_test.py` | done | Full multi-turn ReAct loop using Anthropic/Llama. Employs `DockerJailExecutor`. Generates mixed ledger events in real-time. |
-| `DockerJailExecutor` | done | Passes commands via `docker-compose exec`. Correctly handles `cwd` via host-to-container path synchronization. |
+| `demo/run_agent_test.py` | done | Full multi-turn ReAct loop using Anthropic/Llama. Employs `DockerJailExecutor`. Now includes explicit seeded scenarios validating ALLOW, BLOCK, FLAG, and Network interception paths live. |
+| `DockerJailExecutor` | done | Passes commands via `docker-compose exec`. Correctly handles `cwd` via strict `pathlib.relative_to()` path-scope enforcement (rejecting `/tmp` and out-of-scope paths). |
 | Native Shell Redirection | done | `ShellParser` and `WardenDaemon` explicitly intercept and fulfill `>` and `>>` output redirection via Python, rather than relying on a shell. Tested explicitly. |
 | Chain Re-parsing | done | `WardenDaemon` splits chained commands (e.g. `&&`) and parses them serially to capture intermediary `cd` updates into the active `work_dir` state. |
 

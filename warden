@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+import argparse
+import sys
+import subprocess
+import json
+import socket
+import time
+from pathlib import Path
+
+# Ensure Warden can be imported if run from repo root
+sys.path.insert(0, str(Path(__file__).parent.resolve()))
+
+def cmd_daemon_start(args):
+    """
+    Bootstrap command: runs docker-compose up -d first, then starts WardenDaemon.
+    """
+    print("> docker-compose up -d")
+    result = subprocess.run(["docker-compose", "up", "-d"])
+    if result.returncode != 0:
+        print("Error: docker-compose failed to start. Cannot start daemon.", file=sys.stderr)
+        sys.exit(1)
+        
+    print("Containers are up. Starting WardenDaemon...")
+    from daemon.core import WardenDaemon
+    repo_root = Path(__file__).parent.resolve()
+    
+    daemon = WardenDaemon(
+        policy_path=repo_root / "daemon" / "rules" / "policy.yaml",
+        ledger_path=repo_root / "warden.db",
+        work_dir=repo_root,
+        session_id="daemon-mode"
+    )
+    
+    print("WardenDaemon running. Control socket listening at /tmp/warden_ipc/warden_control.sock")
+    try:
+        # Block forever
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nShutting down WardenDaemon...")
+        daemon.close()
+        sys.exit(0)
+
+def cmd_exec(args):
+    """
+    CLI wrapper: sends a command to the daemon's control socket and prints the result.
+    """
+    sock_path = "/tmp/warden_ipc/warden_control.sock"
+    if not Path(sock_path).exists():
+        print(f"Error: Warden daemon is not running (socket {sock_path} not found).", file=sys.stderr)
+        sys.exit(1)
+        
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(sock_path)
+    except Exception as e:
+        print(f"Error: Could not connect to Warden daemon: {e}", file=sys.stderr)
+        sys.exit(1)
+        
+    req = {
+        "cmd": args.command,
+        "executor": args.executor
+    }
+    
+    try:
+        s.sendall((json.dumps(req) + "\n").encode("utf-8"))
+        
+        # Read response
+        f = s.makefile('r', encoding='utf-8')
+        line = f.readline()
+        if not line:
+            print("Error: Empty response from daemon.", file=sys.stderr)
+            sys.exit(1)
+            
+        resp = json.loads(line)
+        
+        if resp.get("stdout"):
+            sys.stdout.write(resp["stdout"])
+        if resp.get("stderr"):
+            sys.stderr.write(resp["stderr"])
+            
+        sys.exit(resp.get("exit_code", 0))
+    except Exception as e:
+        print(f"Error communicating with daemon: {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        s.close()
+
+def main():
+    parser = argparse.ArgumentParser(description="Warden CLI")
+    subparsers = parser.add_subparsers(dest="subcommand", required=True)
+    
+    # warden daemon start
+    daemon_parser = subparsers.add_parser("daemon", help="Manage the Warden daemon")
+    daemon_sub = daemon_parser.add_subparsers(dest="daemon_cmd", required=True)
+    daemon_start_parser = daemon_sub.add_parser("start", help="Bootstrap containers and start the daemon")
+    daemon_start_parser.set_defaults(func=cmd_daemon_start)
+    
+    # warden exec
+    exec_parser = subparsers.add_parser("exec", help="Execute a command via the Warden daemon")
+    exec_parser.add_argument("command", help="The command string to execute")
+    exec_parser.add_argument("--executor", default="docker_jail", choices=["docker_jail", "host"], 
+                             help="Executor to run the command on (default: docker_jail)")
+    exec_parser.set_defaults(func=cmd_exec)
+    
+    args = parser.parse_args()
+    args.func(args)
+
+if __name__ == "__main__":
+    main()

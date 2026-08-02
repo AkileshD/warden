@@ -237,3 +237,41 @@ When the agent types `curl evil.com`, two things happen: first, a shell command 
 
 **Technical:** 
 In `_resolve_network_binary`, we use a SQL `JOIN` on the `action_id` column to correlate the `network` event with its originating `shell_command` event. This differs from the real-time UDP IPC correlation from the earlier Phase 2 fix (which unified the physical ledgers). Here, we are performing *post-hoc* correlation at scan time: the `events` table contains the linked `action_id` in both rows, allowing the scanner to look up `json_extract(e2.parsed_action, '$.binary')` on a best-effort basis for display purposes only, without altering the pure-destination grouping used for threshold detection.
+
+---
+
+### Docker Bind-Mount vs Tmpfs Semantics
+**Part of:** Phase 5 — `DockerJailExecutor`
+**Why it came up:** While diagnosing the directory-persistence backlog item, we had to determine why some directory changes inside the jail persisted while others threw errors or disappeared.
+
+**Plain English:**
+When a Docker container runs, it usually starts fresh and loses any files you created once it stops. To save files permanently, we map a folder from the host computer directly into the container—this is called a "bind-mount." In Warden, the host's `project/` folder is mapped to `/workspace` inside the container. Anything written to `/workspace` actually saves on the host and persists across restarts. However, the `/tmp` folder in the container is configured as a "tmpfs" (a temporary, in-memory filesystem) for security. Because `/tmp` is not mapped to the host, it cannot be translated back to a host path, and any files put there vanish immediately when the container stops.
+
+**Technical:**
+The jail container is explicitly run with `--read-only` and `--tmpfs /tmp`, combined with a `-v ./project:/workspace` bind-mount. This creates two distinct filesystem scopes within the container. When `DockerJailExecutor` translates paths via `_get_container_workdir()`, paths under `./project` correctly resolve into `/workspace/...` and are persisted to the host filesystem. Paths targeting `/tmp` fall entirely outside the host bind-mount. Attempting to translate a daemon-side `work_dir` to `/tmp` fails because there is no corresponding host-side directory to anchor it to; the state is strictly ephemeral and confined to the container's RAM.
+
+---
+
+### Path-Scope Enforcement using pathlib.relative_to()
+**Part of:** Phase 5 — `DockerJailExecutor._get_container_workdir()`
+**Why it came up:** We discovered a bug where the executor was silently defaulting to `/workspace` for paths that were completely outside the allowed project directory.
+
+**Plain English:**
+To translate a folder path on the host computer into the correct folder path inside the Docker container, we need to check if the path is actually inside the allowed `project` folder. Previously, the code just looked at the first word of the path, which meant a path like `/tmp` on the host would get ignored and the container would quietly run the command in the default folder instead. By using `pathlib.relative_to()`, Python mathematically ensures the path is strictly inside the target folder, and raises a loud error if it isn't, preventing commands from silently running in the wrong place.
+
+**Technical:**
+A naive string-prefix or list-index check (e.g., `rel_path.parts[0] == "project"`) is vulnerable to path traversal or absolute paths that bypass the prefix entirely. When a path fell outside this check, the previous implementation silently returned the fallback `/workspace`. By switching to `host_path.relative_to(host_repo_root / "project")`, we leverage Python's strict path resolution. If `host_path` is not a true descendant of the project root, `ValueError` is raised. We catch this and re-raise it as a typed `WorkdirOutOfScopeError`, making the path translation failure explicit in the execution result rather than silently altering the command's context.
+
+---
+
+### UDP IPC pending_actions Correlation Model
+**Part of:** Phase 2 / Phase 3 Integration — `daemon/ledger/logger.py` & `daemon/core.py`
+**Why it came up:** We needed to link a network packet intercepted by the sidecar back to the specific shell command (in the daemon) that caused it, but they run in isolated namespaces.
+
+**Plain English:**
+When an AI agent runs a command that talks to the internet, we want our logs to show exactly which command caused which network request. However, the firewall sidecar intercepting the network packet has no idea what shell command is running. Because the sidecar and the main daemon run in completely isolated environments, they can't just share memory or look at each other's processes. To fix this, right before the daemon runs a command, it writes an "I am about to run this" note to the database with a unique ID and a timestamp. When the sidecar sees a network packet, it sends the packet's timestamp over a UDP message to the daemon. The daemon looks at the time, finds the matching "about to run" note, and uses the unique ID to link them together permanently.
+
+**Technical:**
+The daemon and sidecar run in separate Docker PID namespaces, making correlation via `/proc/<pid>/environ` or conntrack PID metadata impossible. To bridge this "Correlation Gap", the daemon adopts a single-writer architecture with temporal correlation. Before `subprocess.Popen` executes, the daemon inserts a row into the `pending_actions` SQLite table containing a generated `action_id` and `dispatched_at` timestamp. When the sidecar's NFQUEUE intercepts a packet, it captures the current time and sends a JSON payload containing the packet details and `packet_timestamp` to the daemon via UDP datagram. The daemon's IPC listener receives this, queries `pending_actions` for the closest `dispatched_at` within a strict TTL window (e.g., ±5 seconds), extracts the `action_id`, and tags the network `LedgerEvent`. This successfully unifies the causal chain despite absolute process isolation.
+
+- **Unix Socket Switchboard (Phase 5 Part 1):** Came up while implementing the control plane socket. By intercepting connections on `/tmp/warden_ipc/warden_control.sock`, the daemon accepts requests specifying which `executor` to use (`host` or `docker_jail`). The socket listener temporarily overrides `daemon._real_executor` before injecting the request into the standard `daemon.process(cmd)` pipeline. This ensures both container-bound actions and host-bound actions pass through the exact same shell parsing, command inspection, and rule evaluation layer without code duplication.

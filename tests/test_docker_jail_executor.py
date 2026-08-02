@@ -25,7 +25,7 @@ import pytest
 # Make demo module importable from tests/
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from demo.run_agent_test import DockerJailExecutor, WorkdirOutOfScopeError
+from daemon.executors.docker_jail_executor import DockerJailExecutor, WorkdirOutOfScopeError
 
 
 @pytest.fixture()
