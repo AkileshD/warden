@@ -113,7 +113,7 @@ warden/
 
 ### Phase 5 — Agent Integration Layer (Part 1) ✅ COMPLETE
 
-*Note: Part 1 is fully built and verified live. The SDK, Approval CLI, and Dashboard are explicitly deferred to Part 2.*
+*Note: Part 1 is fully built and verified live. It has been validated via live interactive manual testing (all scenarios: ALLOW, BLOCK, FLAG-as-block, malformed input, network ALLOW, network BLOCK, offline CLI behavior) in addition to the earlier automated live agent run. The SDK, Approval CLI, and Dashboard are explicitly deferred to Part 2.*
 
 | Component | Status | Notes |
 |---|---|---|
@@ -165,20 +165,25 @@ warden/
 
 ---
 
-## 4. Backlog / Deferred Items
+## 4. Backlog / Next Steps
 
-This is a living list of everything intentionally postponed across the whole project. Update it any time something gets deferred or an item gets picked up and resolved (move resolved items to a "Resolved" subsection with the date/commit, don't delete them).
+This is a living, prioritized menu of the open state across the project:
 
-- **Phase 2.5:** Stateless SNI filtering fix (needs conntrack) — `WARDEN_SPEC.md §7.3`.
+- **Phase 2.5 (Stateful SNI filtering):** Still open, known limitation, confirmed multiple times.
+- **Phase 3 Integration:** Core built, still needs the synthetic-data end-to-end demo.
+- **Phase 5 Part 2 (SDK, approval CLI, dashboard):** Explicitly deferred, not started, must not be dropped from tracking.
+- **Phase 4 (UI):** Not started. Requires the design/mockup gate first. Lowest urgency of the open items.
+- **Open Minor Items:**
+  - Stale `demo/run_phase2_demo.py`.
+  - The `find`/`cat` argument-ordering bug (noticed earlier, still undiagnosed).
+  - The three core docs' gitignore status (flagged earlier, not yet resolved).
+
+### Deferred Architecture / Long-Term (Not Scheduled)
 - **v2.0:** eBPF/Rust migration for network interceptor — `WARDEN_SPEC.md §13` (deferred production path).
-- **Phase 5:** Argument-order scrambling in commands like `find` ("paths must precede expression") — found during validation milestone.
-- **Phase 3:** FLAG-only ML inspector — named idea, not designed or built. See `WARDEN_SPEC.md §9`.
-- **Phase 3:** LLM-based explanation generation for complex multi-factor patterns — open question, not committed. Revisit only if templating proves insufficient.
-- **Phase 3 detection refinement (near-term):** CIDR-block clustering — group by /24 instead of requiring exact `dst_ip` match for the N=10/T=6h detection rule. Add once the exact-match rule has been validated against real ledger data and proves too coarse in practice (e.g. exfil to adjacent IPs in the same subnet not being caught). See `WARDEN_SPEC.md §9`.
-- **Phase 3 detection refinement (longer-term, not scheduled):** Rate-of-change / burst detection relative to a rolling historical baseline, instead of a flat threshold. Deferred until enough historical ledger data exists for a meaningful baseline to be computed — meaningless to build before real usage data is available. See `WARDEN_SPEC.md §9`.
-- **Phase 6:** Packaging & distribution — ship as "requires Docker" for v1.0. No-Docker-required native OS sandboxing deferred. See `WARDEN_SPEC.md §12`.
-- **Phase 2 demo script (`demo/run_phase2_demo.py`) is stale:** Predates the UDP IPC fix, assumes the sidecar writes directly to a local SQLite file instead of sending events via UDP to a running host daemon. Network blocking itself is unaffected and verified working; only the demo's own ledger verification step is broken. Needs the demo script updated to start the host daemon (or otherwise satisfy the UDP IPC handoff) before it can show a clean ledger read.
-- **Jail Base Image:** `requests` package missing from jail image — deliberate decision, not an oversight (declined to expand attack surface).
+- **Phase 3:** FLAG-only ML inspector and LLM-based explanation generation.
+- **Phase 3 detection refinements:** CIDR-block clustering and rate-of-change/burst detection.
+- **Phase 6:** Packaging & distribution (ship as "requires Docker" for v1.0).
+- **Jail Base Image:** `requests` package missing from jail image — deliberate decision.
 
 ### Resolved
 
@@ -220,6 +225,7 @@ No ML/decision-tree work started. Phase 3 Integration end-to-end demo remains op
 ---
 
 ## 7. Changelog
+- **2026-08-02** — Manual testing pass: Verified `warden exec` CLI offline behavior and live daemon scenarios (shell parsing defaults, network drops vs HTTP errors).
 - **2026-08-02** — Phase 5 Part 1 completed: Built `ControlSocket` and `warden` CLI wrapper to act as the single control plane. Added `threading.Lock` to executor override for concurrency safety. Standardized ledger DB naming to `warden_demo.db`. Confirmed `core.py` changes are purely lifecycle hooks. Successfully ran live `demo/run_agent_test.py` as a pure client via the socket.
 
 
