@@ -26,7 +26,7 @@ def cmd_daemon_start(args):
     
     daemon = WardenDaemon(
         policy_path=repo_root / "daemon" / "rules" / "policy.yaml",
-        ledger_path=repo_root / "warden.db",
+        ledger_path=repo_root / "warden_demo.db",
         work_dir=repo_root,
         session_id="daemon-mode"
     )

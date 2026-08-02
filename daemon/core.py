@@ -87,7 +87,7 @@ class WardenDaemon:
     Usage:
         daemon = WardenDaemon(
             policy_path=Path("daemon/rules/policy.yaml"),
-            ledger_path=Path("warden.db"),
+            ledger_path=Path("warden_demo.db"),
             work_dir=Path("."),
         )
         result = daemon.process("ls; rm -rf /")

@@ -36,6 +36,7 @@ class ControlSocket:
             host_repo_root=self.daemon._work_dir,
             work_dir=self.daemon._work_dir / "project"
         )
+        self._executor_lock = threading.Lock()
 
     def start(self) -> None:
         if self._running:
@@ -136,42 +137,39 @@ class ControlSocket:
             
             # Switchboard
             # Temporarily replace the daemon's _real_executor for this request
-            # This ensures both paths go through the exact same core.py pipeline entrypoint
-            original_executor = self.daemon._real_executor
-            
-            if executor_type == "host":
-                self.daemon._real_executor = self._host_executor
-            else:
-                self.daemon._real_executor = self._jail_executor
+            # We use a lock to ensure that if connection handling is ever parallelized,
+            # concurrent requests don't cross-contaminate the executor selection.
+            with self._executor_lock:
+                original_executor = self.daemon._real_executor
                 
-            # If cwd is requested, we could update the daemon/executor's work_dir.
-            # But normally we preserve the stateful cwd of the daemon unless specified.
-            if req_cwd:
-                # TODO: handle dynamic cwd changes from request if needed, 
-                # but for this pass, the stateful work_dir tracks normally via 'cd' commands.
-                pass
-                
-            try:
-                # Call the single pipeline entrypoint
-                result = self.daemon.process(cmd)
-                
-                resp = {
-                    "stdout": result.stdout,
-                    "exit_code": result.exit_code,
-                    # ProcessResult merges stdout from all outcomes. 
-                    # We can construct stderr manually or merge it.
-                    "stderr": "".join(o.execution_result.stderr for o in result.outcomes) if result.outcomes else "",
-                    # was_real and was_fabricated can be taken from the last outcome if exists
-                    "was_real": result.outcomes[-1].execution_result.was_real if result.outcomes else False,
-                    "was_fabricated": result.outcomes[-1].execution_result.was_fabricated if result.outcomes else False,
-                }
-                file_obj.write(json.dumps(resp) + "\n")
-                file_obj.flush()
-            except Exception as e:
-                self._send_error(file_obj, f"Daemon execution error: {e}")
-            finally:
-                # Restore the original executor
-                self.daemon._real_executor = original_executor
+                if executor_type == "host":
+                    self.daemon._real_executor = self._host_executor
+                else:
+                    self.daemon._real_executor = self._jail_executor
+                    
+                # If cwd is requested, we could update the daemon/executor's work_dir.
+                # But normally we preserve the stateful cwd of the daemon unless specified.
+                if req_cwd:
+                    pass
+                    
+                try:
+                    # Call the single pipeline entrypoint
+                    result = self.daemon.process(cmd)
+                    
+                    resp = {
+                        "stdout": result.stdout,
+                        "exit_code": result.exit_code,
+                        "stderr": "".join(o.execution_result.stderr for o in result.outcomes) if result.outcomes else "",
+                        "was_real": result.outcomes[-1].execution_result.was_real if result.outcomes else False,
+                        "was_fabricated": result.outcomes[-1].execution_result.was_fabricated if result.outcomes else False,
+                    }
+                    file_obj.write(json.dumps(resp) + "\n")
+                    file_obj.flush()
+                except Exception as e:
+                    self._send_error(file_obj, f"Daemon execution error: {e}")
+                finally:
+                    # Restore the original executor
+                    self.daemon._real_executor = original_executor
                 
         except Exception as e:
             print(f"[ControlSocket] Connection handling error: {e}", file=sys.stderr)

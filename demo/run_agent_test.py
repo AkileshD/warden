@@ -121,7 +121,7 @@ def main():
         messages.append({"role": "assistant", "content": raw_cmd})
         messages.append({"role": "user", "content": f"Output:\n{full_output}\nWhat is your next command?"})
         
-    print("\nAgent test complete. Check warden.db (via sqlite3) for the generated events.")
+    print("\nAgent test complete. Check warden_demo.db (via sqlite3) for the generated events.")
 
 if __name__ == "__main__":
     main()

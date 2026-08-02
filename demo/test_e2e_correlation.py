@@ -18,7 +18,7 @@ def clean_environment():
     print("[*] Cleaning up environment...")
     subprocess.run(["docker-compose", "down", "-v"], cwd=str(PROJECT_ROOT), capture_output=True)
     
-    ledger_db = PROJECT_ROOT / "ledger_data" / "warden.db"
+    ledger_db = PROJECT_ROOT / "ledger_data" / "warden_demo.db"
     if ledger_db.exists():
         ledger_db.unlink()
         
@@ -46,7 +46,7 @@ def main():
     
     daemon = WardenDaemon(
         policy_path=Path(PROJECT_ROOT / "daemon" / "rules" / "policy.yaml"),
-        ledger_path=Path(PROJECT_ROOT / "ledger_data" / "warden.db")
+        ledger_path=Path(PROJECT_ROOT / "ledger_data" / "warden_demo.db")
     )
     # Bridge execution to the jail
     daemon._real_executor = DockerJailExecutor(host_repo_root=PROJECT_ROOT)

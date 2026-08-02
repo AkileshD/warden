@@ -147,7 +147,7 @@ class Logger:
     CONTRACT: implements Logger.record() — see daemon/ledger/logger.py docstring.
 
     Usage:
-        logger = Logger(db_path=Path("warden.db"))
+        logger = Logger(db_path=Path("warden_demo.db"))
         logger.record(event)
     """
 

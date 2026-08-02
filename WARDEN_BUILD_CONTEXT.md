@@ -113,14 +113,16 @@ warden/
 
 ### Phase 5 — Agent Integration Layer (Part 1) ✅ COMPLETE
 
-*Note: Active build of Part 1 (Unix socket control plane + switchboard routing + `warden daemon start` + CLI wrapper) completed on 2026-08-02. The SDK, Approval CLI, and Dashboard are explicitly deferred to Part 2.*
+*Note: Part 1 is fully built and verified live. The SDK, Approval CLI, and Dashboard are explicitly deferred to Part 2.*
 
 | Component | Status | Notes |
 |---|---|---|
-| `warden daemon start` | done | Bootstrap command to run `docker-compose up -d` (jail+sidecar) and start the socket listener sequentially. |
-| Unix Socket + Switchboard | done | Single control plane. Routes requests via `executor` field (`docker_jail` vs `host`). Auth is OS-level only for now. |
+| `warden daemon start` | done | Bootstrap command runs `docker-compose up -d` (jail+sidecar) and starts the socket listener. |
+| Unix Socket + Switchboard | done | Single control plane. Routes requests via `executor` field (`docker_jail` vs `host`). Includes `threading.Lock` around executor override for concurrency safety. Auth is OS-level only. |
 | `warden exec <cmd>` | done | Thin CLI shim over the socket. |
-| `demo/run_agent_test.py` migration | done | Update the existing agent harness to call the socket instead of importing `DockerJailExecutor` in-process. |
+| `demo/run_agent_test.py` migration | done | Fully migrated to act as a pure client calling the socket instead of importing `DockerJailExecutor`. |
+| Ledger Standardization | done | Unified ledger naming back to `warden_demo.db` everywhere (`core.py`, `logger.py`, `warden`, tests) to preserve the established canonical default. |
+| `core.py` changes | done | Strictly limited to lifecycle hooks (instantiating, starting, and stopping `ControlSocket`). Switchboard logic lives entirely in `control_socket.py`. |
 
 ### Phase 1 — Smart Command Deception ✅ COMPLETE
 
@@ -218,6 +220,8 @@ No ML/decision-tree work started. Phase 3 Integration end-to-end demo remains op
 ---
 
 ## 7. Changelog
+- **2026-08-02** — Phase 5 Part 1 completed: Built `ControlSocket` and `warden` CLI wrapper to act as the single control plane. Added `threading.Lock` to executor override for concurrency safety. Standardized ledger DB naming to `warden_demo.db`. Confirmed `core.py` changes are purely lifecycle hooks. Successfully ran live `demo/run_agent_test.py` as a pure client via the socket.
+
 
 - **Initial** — `WARDEN_BUILD_CONTEXT.md` created alongside `WARDEN_SPEC.md`. `design/` directory scaffolded with the visual-spec-before-code gate. No Phase 1 code written yet.
 - **Phase 1 complete (2026-07-12)** — All 6 components implemented: Parser, Inspector interface + CommandInspector, RuleEngine + policy.yaml, RealExecutor + FakeExecutor, Ledger (schema + Logger), Core loop + demo script. 74 tests pass. Demo produces correct interception ledger. Rule precedence: first-match-wins (documented + test-locked). FLAG → fake executor (not allow). macOS symlink resolution handled in tests. Command substitution detection fixed to scan raw segment before shlex tokenisation.
