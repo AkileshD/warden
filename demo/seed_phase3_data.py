@@ -181,13 +181,18 @@ def _ts(age_hours: float) -> str:
 def _make_network_blob(binary: str, destination: str, is_hostname: bool) -> str:
     """Build the parsed_action JSON blob for a network event row."""
     if is_hostname:
-        # hostname_or_sni set; dst_ip set to a plausible value for the scenario
+        # WHY dst_ip=None: the IP-axis scanner query filters
+        #   WHERE json_extract(parsed_action, '$.dst_ip') IS NOT NULL
+        # A JSON null becomes SQL NULL and is excluded, so these hostname-only
+        # rows are invisible to the IP axis. Previously this was hardcoded to
+        # "1.2.3.4", which caused all N hostname-scenario rows to share the
+        # same IP — exactly crossing the N=10 threshold on the IP axis and
+        # producing a spurious 5th candidate. Setting None here correctly
+        # restricts these rows to the hostname axis only.
         return json.dumps({
             "binary":          binary,
             "raw_input":       f"TCP {destination}:443",
-            "dst_ip":          "1.2.3.4",   # WHY: network detection on hostname axis
-                                              # uses hostname_or_sni, not dst_ip.
-                                              # Providing a plausible IP keeps rows realistic.
+            "dst_ip":          None,
             "dst_port":        443,
             "protocol":        "TCP",
             "hostname_or_sni": destination,
