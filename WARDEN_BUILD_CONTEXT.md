@@ -113,7 +113,7 @@ warden/
 
 ### Phase 5 — Agent Integration Layer (Part 1) ✅ COMPLETE
 
-*Note: Part 1 is fully built and verified live. It has been validated via live interactive manual testing (all scenarios: ALLOW, BLOCK, FLAG-as-block, malformed input, network ALLOW, network BLOCK, offline CLI behavior) in addition to the earlier automated live agent run. The SDK, Approval CLI, and Dashboard are explicitly deferred to Part 2.*
+*Note: Part 1 is fully built and verified live. It has been validated via live interactive manual testing (all scenarios: ALLOW, BLOCK, FLAG-as-block, malformed input, network ALLOW, network BLOCK, offline CLI behavior) in addition to the earlier automated live agent run. The Python SDK and Dashboard are explicitly deferred to Part 2. The Approval CLI was delivered early as part of Phase 3 (`daemon/advisor/approval_cli.py`) — it is a Phase 3 component, not a Phase 5 component. Only the Python SDK and Dashboard remain under Phase 5 Part 2.*
 
 | Component | Status | Notes |
 |---|---|---|
@@ -170,7 +170,7 @@ warden/
 Near/mid-term:
 - Phase 2.5 — Stateful SNI filtering (hostname-based network ALLOW rules)
 - Phase 3 integration — end-to-end demo with synthetic seed data (core already built)
-- Phase 5 Part 2 — Python SDK, Approval CLI, Dashboard client (deferred, confirmed still required)
+- Phase 5 Part 2 — Python SDK, Dashboard client (deferred, confirmed still required). NOTE: Approval CLI was delivered early as a Phase 3 component (`daemon/advisor/approval_cli.py`); it is no longer outstanding under Phase 5 Part 2.
 - Phase 4 — Minimalist UI/dashboard (needs design/ mockup gate first)
 - Phase 6 — Packaging/distribution
 
@@ -194,7 +194,7 @@ This is a living, prioritized menu of the open state across the project:
 
 - **Phase 2.5 (Stateful SNI filtering):** Still open, known limitation, confirmed multiple times.
 - **Phase 3 Integration:** Core built, still needs the synthetic-data end-to-end demo.
-- **Phase 5 Part 2 (SDK, approval CLI, dashboard):** Explicitly deferred, not started, must not be dropped from tracking.
+- **Phase 5 Part 2 (SDK, dashboard):** Explicitly deferred. Must not be dropped from tracking. NOTE: Approval CLI is resolved — it was delivered as part of Phase 3, not Phase 5. See `daemon/advisor/approval_cli.py`.
 - **Phase 4 (UI):** Not started. Requires the design/mockup gate first. Lowest urgency of the open items.
 - **Open Minor Items:**
   - Stale `demo/run_phase2_demo.py`.
@@ -288,6 +288,7 @@ seed data in the live ledger to produce a proposed rule end-to-end.
 - **Roadmap/Backlog consolidation (post-2026-08-02, commit fdb05f9)** — Docs-only. Consolidated roadmap, backlog, and long-term items in `WARDEN_BUILD_CONTEXT.md`: added explicit "Roadmap — Next Steps" and "Backlog" sections near the top of §4, added "Long-Term / Stretch" section at the bottom of the file, and marked old scattered backlog/next-steps content as superseded (preserved in-place, not deleted). No code changes.
 - **Understanding log + build context updated after manual testing (post-2026-08-02, commit bf0bed5)** — Docs-only. Updated `WARDEN_BUILD_CONTEXT.md` and `WARDEN_UNDERSTANDING_LOG.md` with results of the manual `warden exec` CLI testing pass and live daemon validation recorded in the 2026-08-02 changelog entry. No code changes.
 - **Repo audit + doc reconciliation (2026-08-06)** — Docs-only. Ran full verification pass against `WARDEN_BUILD_CONTEXT.md §3` and §5 claims. Corrected Phase 3 test count (35→38, extra 3 in `TestApprovalCliGate`), corrected total test count annotation (237→239), refreshed §5 Handoff Note with verified state, and appended the two previously unrecorded doc commits (fdb05f9, bf0bed5) to the changelog. `demo/run_phase2_demo.py` stale status confirmed, no fix applied. `docker-compose up/down` verified clean.
+- **Phase 5 Part 2 tracking corrected (2026-08-06)** — Docs-only. Approval CLI (`daemon/advisor/approval_cli.py`) was delivered as a Phase 3 component during the Phase 3 advisor build, not a Phase 5 component. The `TestApprovalCliGate` test class tests its `check_approve_permissive_gate()` pure function, which correctly implements §9.5 asymmetric scrutiny. Updated three Phase 5 Part 2 references in §3 note, Roadmap, and Old Backlog to reflect this. Only Python SDK and Dashboard remain outstanding under Phase 5 Part 2.
 ---
 
 ## 8. Note on Future Files (do not build yet — context only)
