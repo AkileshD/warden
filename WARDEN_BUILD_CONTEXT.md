@@ -173,6 +173,7 @@ warden/
 
 Near/mid-term:
 - Phase 2.5 — Stateful SNI filtering (hostname-based network ALLOW rules)
+  - TODO(phase2.5): demo/seed_phase3_data.py's _make_network_blob() now sets dst_ip=None for hostname-typed network events (fixed in commit 872660e — previously a hardcoded placeholder IP caused a spurious IP-axis detection candidate). This correctly isolates the hostname axis for Phase 3's detection scanner, but it means the seeder no longer models a realistic packet shape: per WARDEN_SPEC.md §7.2, a real TLS ClientHello always carries both an IP and an SNI hostname together — they don't come as one-or-the-other. If Phase 2.5's conntrack/SNI work needs synthetic seed data that exercises both fields co-occurring on the same event (e.g. to test retroactive-enforcement logic against a resolved IP+hostname pair), this seeder should not be reused as-is without revisiting that design. Not a blocker for Phase 3, which only needed axis isolation — flagging before Phase 2.5 starts so it isn't rediscovered the hard way.
 - Phase 5 Part 2 — Python SDK, Dashboard client (deferred, confirmed still required). NOTE: Approval CLI was delivered early as a Phase 3 component (`daemon/advisor/approval_cli.py`); it is no longer outstanding under Phase 5 Part 2.
 - Phase 4 — Minimalist UI/dashboard (needs design/ mockup gate first)
 - Phase 6 — Packaging/distribution
