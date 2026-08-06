@@ -97,11 +97,11 @@ warden/
 
 > Update this every session. Mark each item `not_started` / `in_progress` / `done` (done = has passing tests, not just exists).
 
-**Active phase:** Phase 1 complete; Phase 2 complete. Validation Milestone complete. Phase 3 is next (Spec design updated, zero code written).
+**Active phase:** Phase 1 complete; Phase 2 complete; Phase 3 complete. Validation Milestone complete. Next: Phase 2.5 (stateful SNI) or Phase 4 (UI).
 
-### Phase 3 — The Smart Policy Loop 🏗 IN PROGRESS
+### Phase 3 — The Smart Policy Loop ✅ COMPLETE
 
-*Note: The design for Phase 3 uses deterministic statistical methods instead of local LLMs. The core detection engine and pipeline are now built and tested.*
+*Note: The design for Phase 3 uses deterministic statistical methods instead of local LLMs. The full pipeline — detection, template explanation, dry-run replay, proposal write, approval CLI, end-to-end demo — is built, tested, and verified.*
 
 | Component | Status | Notes |
 |---|---|---|
@@ -109,7 +109,11 @@ warden/
 | `daemon/ledger/schema.sql` / `logger.py` | done | `proposed_rules` table added with `detection_axis` column for full auditability back to the triggering axis. |
 | `daemon/advisor/template_engine.py` | done | Deterministic rule generation + reasoning text filling, now properly surfacing the matching axis (e.g. "matched via IP"). |
 | `daemon/advisor/dry_run_replay.py` | done | Replays historical events against candidate rules. Strictly filters events by the specific `detection_axis` (IP or hostname) to ensure accurate A-of-B counts. |
+| `daemon/advisor/approval_cli.py` | done | Human approval interface. Subcommands: list, show, approve, reject. Implements §9.5 asymmetric scrutiny: BLOCK proposals require a simple y/N prompt; ALLOW-expanding proposals require `--confirm-permissive` + typed confirmation. Never writes to policy.yaml — human copies the YAML snippet. Built as a Phase 3 component (see Phase 5 Part 2 note). |
+| `demo/seed_phase3_data.py` | done | Inserts synthetic FLAG events across all four detection axes with positive controls (shell-ip, shell-hostname, network-ip, network-hostname) and two classes of negative controls (window-expired, volume-shy). Used by the end-to-end demo and by `tests/test_seed_phase3_data.py`. |
+| `demo/run_phase3_demo.py` | done | End-to-end integration demo: seed → scan → template fill → replay → proposal write → summary table → negative-control verification. Exits 0 with all assertions passing. |
 | `tests/test_phase3_advisor.py` | done | 38 tests verifying all Phase 3 components, including strict isolation of axes during detection and replay. (Extra 3 tests vs. earlier count are in `TestApprovalCliGate`.) |
+| `tests/test_seed_phase3_data.py` | done | 20 tests verifying seed row counts, all four positive-control detection axes fire, all negative controls are silent, and SEED_SCENARIOS metadata is internally consistent. |
 
 ### Phase 5 — Agent Integration Layer (Part 1) ✅ COMPLETE
 
@@ -169,7 +173,6 @@ warden/
 
 Near/mid-term:
 - Phase 2.5 — Stateful SNI filtering (hostname-based network ALLOW rules)
-- Phase 3 integration — end-to-end demo with synthetic seed data (core already built)
 - Phase 5 Part 2 — Python SDK, Dashboard client (deferred, confirmed still required). NOTE: Approval CLI was delivered early as a Phase 3 component (`daemon/advisor/approval_cli.py`); it is no longer outstanding under Phase 5 Part 2.
 - Phase 4 — Minimalist UI/dashboard (needs design/ mockup gate first)
 - Phase 6 — Packaging/distribution
@@ -221,24 +224,24 @@ This is a living, prioritized menu of the open state across the project:
 ## 5. Handoff Note (overwrite this every session — do not append, replace)
 
 ```
-Repo audit complete — 2026-08-06.
+Phase 3 integration complete — 2026-08-06.
 
 Verified state:
-- 239/239 tests passing, 0 failing (python3 -m pytest tests/ confirmed).
-- Git tree clean: working tree matches origin/main, no uncommitted changes.
-- docker-compose up -d: both jail and warden-sidecar containers start cleanly,
-  sidecar iptables rule inserts and NFQUEUE listener starts with no errors.
-  docker-compose down: all containers and network removed cleanly.
-- demo/run_phase2_demo.py: CONFIRMED STALE/BROKEN. Hardcodes the pre-UDP-IPC
-  ledger path /data/ledger/warden.db (line 65), which no longer exists — the
-  sidecar does not write SQLite directly since the UDP IPC fix. Demo runs without
-  crashing but produces no meaningful output (docker exec calls silently fail if
-  Docker is not pre-started, and the ledger query targets a nonexistent path).
-  Fix is deferred — this is a known backlog item, not regression.
+- 259/259 tests passing, 0 failing (python3 -m pytest tests/ confirmed).
+- Git tree clean: two commits made this session (928e26b docs, 3457451 feat).
+- Phase 3 fully complete: detection_scanner, template_engine, dry_run_replay,
+  approval_cli, seed_phase3_data, run_phase3_demo all built and tested.
+  demo/run_phase3_demo.py exits 0 with all assertions passing.
+  Negative controls (window-expired + volume-shy) verified silent.
+  Unattributed network events ('unknown source') correctly skip replay_total
+  assertion — known design behavior, documented in demo script.
+- demo/run_phase2_demo.py: CONFIRMED STALE/BROKEN (pre-UDP-IPC ledger path).
+  Fix deferred — known backlog item, not a regression.
+- Phase 5 Part 2 tracking corrected: Approval CLI is a Phase 3 component;
+  only Python SDK and Dashboard remain under Phase 5 Part 2.
 
-Next open item on the roadmap: Phase 3 end-to-end integration demo — run the
-detection scanner + template engine + dry-run replay pipeline against synthetic
-seed data in the live ledger to produce a proposed rule end-to-end.
+Next open item on the roadmap: Phase 2.5 (stateful SNI filtering) or
+Phase 4 (minimalist UI — requires design/mockup gate first).
 ```
 
 ---
@@ -288,7 +291,8 @@ seed data in the live ledger to produce a proposed rule end-to-end.
 - **Roadmap/Backlog consolidation (post-2026-08-02, commit fdb05f9)** — Docs-only. Consolidated roadmap, backlog, and long-term items in `WARDEN_BUILD_CONTEXT.md`: added explicit "Roadmap — Next Steps" and "Backlog" sections near the top of §4, added "Long-Term / Stretch" section at the bottom of the file, and marked old scattered backlog/next-steps content as superseded (preserved in-place, not deleted). No code changes.
 - **Understanding log + build context updated after manual testing (post-2026-08-02, commit bf0bed5)** — Docs-only. Updated `WARDEN_BUILD_CONTEXT.md` and `WARDEN_UNDERSTANDING_LOG.md` with results of the manual `warden exec` CLI testing pass and live daemon validation recorded in the 2026-08-02 changelog entry. No code changes.
 - **Repo audit + doc reconciliation (2026-08-06)** — Docs-only. Ran full verification pass against `WARDEN_BUILD_CONTEXT.md §3` and §5 claims. Corrected Phase 3 test count (35→38, extra 3 in `TestApprovalCliGate`), corrected total test count annotation (237→239), refreshed §5 Handoff Note with verified state, and appended the two previously unrecorded doc commits (fdb05f9, bf0bed5) to the changelog. `demo/run_phase2_demo.py` stale status confirmed, no fix applied. `docker-compose up/down` verified clean.
-- **Phase 5 Part 2 tracking corrected (2026-08-06)** — Docs-only. Approval CLI (`daemon/advisor/approval_cli.py`) was delivered as a Phase 3 component during the Phase 3 advisor build, not a Phase 5 component. The `TestApprovalCliGate` test class tests its `check_approve_permissive_gate()` pure function, which correctly implements §9.5 asymmetric scrutiny. Updated three Phase 5 Part 2 references in §3 note, Roadmap, and Old Backlog to reflect this. Only Python SDK and Dashboard remain outstanding under Phase 5 Part 2.
+- **Phase 5 Part 2 tracking corrected (2026-08-06, commit 928e26b)** — Docs-only. Approval CLI (`daemon/advisor/approval_cli.py`) was delivered as a Phase 3 component during the Phase 3 advisor build, not a Phase 5 component. The `TestApprovalCliGate` test class tests its `check_approve_permissive_gate()` pure function, which correctly implements §9.5 asymmetric scrutiny. Updated three Phase 5 Part 2 references in §3 note, Roadmap, and Old Backlog to reflect this. Only Python SDK and Dashboard remain outstanding under Phase 5 Part 2.
+- **Phase 3 integration complete (2026-08-06, commit 3457451)** — Added `demo/seed_phase3_data.py` (synthetic FLAG-event seeder covering all 4 detection axes with positive + negative controls) and `demo/run_phase3_demo.py` (end-to-end integration demo: seed → scan → template → replay → proposal write → summary → negative-control verification). Added `tests/test_seed_phase3_data.py` with 20 tests. Demo exits 0 cleanly. Total tests: 259 (was 239). No changes to detection_scanner.py, template_engine.py, dry_run_replay.py, policy.yaml, or the core daemon loop. One design note confirmed: unattributed network events (binary = 'unknown source') return replay_total=0 because `read_events_for_pair` queries by binary name — correct graceful-degradation behavior, documented in demo and understanding log.
 ---
 
 ## 8. Note on Future Files (do not build yet — context only)
