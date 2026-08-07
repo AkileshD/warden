@@ -97,7 +97,7 @@ warden/
 
 > Update this every session. Mark each item `not_started` / `in_progress` / `done` (done = has passing tests, not just exists).
 
-**Active phase:** Phase 1 complete; Phase 2 complete; Phase 3 complete. Validation Milestone complete. Next: Phase 2.5 (stateful SNI) or Phase 4 (UI).
+**Active phase:** Phase 1 complete; Phase 2 complete; Phase 3 complete. Validation Milestone complete. **Phase 2.5 (stateful SNI) — IN PROGRESS** (sequencing override: precedes Phase 4, per §6 decision 2026-08-07).
 
 ### Phase 3 — The Smart Policy Loop ✅ COMPLETE
 
@@ -114,6 +114,17 @@ warden/
 | `demo/run_phase3_demo.py` | done | End-to-end integration demo: seed → scan → template fill → replay → proposal write → summary table → negative-control verification. Exits 0 with all assertions passing. |
 | `tests/test_phase3_advisor.py` | done | 38 tests verifying all Phase 3 components, including strict isolation of axes during detection and replay. (Extra 3 tests vs. earlier count are in `TestApprovalCliGate`.) |
 | `tests/test_seed_phase3_data.py` | done | 20 tests verifying seed row counts, all four positive-control detection axes fire, all negative controls are silent, and SEED_SCENARIOS metadata is internally consistent. |
+
+### Phase 2.5 — Stateful SNI Filtering 🔨 IN PROGRESS
+
+*Note: Explicit human sequencing override — Phase 2.5 precedes Phase 4. See §6 RESOLVED entry (2026-08-07). Architecture: connection tracking in sidecar to allow provisional SYN → retroactive SNI verdict on ClientHello. Built incrementally: Step 1 = state primitive; Step 2 = wire into callback; Step 3 = demo + docs.*
+
+| Component | Status | Notes |
+|---|---|---|
+| `sidecar/conntrack.py` | done | `PendingConnectionTracker` — pure in-memory 4-tuple dict with TTL. Methods: `track`, `is_pending`, `resolve`, `sweep_expired`. Zero Docker/NFQUEUE/Scapy dependency. TTL=10s (SYN-to-ClientHello gap). Not wired into interceptor.py yet. |
+| `tests/test_conntrack.py` | done | 23 tests across 5 test classes: track/resolve round-trip, is_pending state, sweep_expired boundary conditions, `__len__`, and TTL constant bounds. All pass without any container running. |
+| Step 2 — wire into `sidecar/interceptor.py` | not_started | Modify `build_callback` to: (a) provisionally accept SYNs on hostname-rule ports, (b) call `resolve()` + SNI-inspect on ClientHellos, (c) call `sweep_expired()` on each packet, (d) retroactively RST if SNI fails. |
+| Step 3 — demo + integration test | not_started | End-to-end test: hostname-allowlisted HTTPS connection succeeds (SNI matches); non-allowlisted HTTPS connection is RST'd after ClientHello. |
 
 ### Phase 5 — Agent Integration Layer (Part 1) ✅ COMPLETE
 
@@ -261,23 +272,29 @@ Context on the five commits that landed after the 2026-08-06 handoff note
 - 4cf5c5e docs: add near-term TODO for bare-ls flag-as-block behavior
   (docs-only)
 
-Housekeeping changes made this session:
+Housekeeping changes made this session (2026-08-07, post-housekeeping):
 - .gitignore: removed contradictory ignore entries for WARDEN_SPEC.md,
   WARDEN_BUILD_CONTEXT.md, WARDEN_UNDERSTANDING_LOG.md (all three remain
   tracked in git — the ignore entries predated this and were in conflict).
 - §5 Handoff Note: replaced stale 928e26b/3457451 note with this note.
 - §4 Backlog: gitignore conflict item removed; moved to §4/§6 Resolved.
-- §7 Changelog: one entry appended.
+- §7 Changelog: entries appended.
 
-Next session decisions made (2026-08-07, post-housekeeping):
+Decisions made this session (2026-08-07):
 - Phase 2.5 sequencing explicitly overridden: Phase 2.5 proceeds before
   Phase 4. Explicit human override of WARDEN_SPEC.md §7.3. Recorded in §6.
 - Docker verified: both containers (jail + warden-sidecar) start and stop
   cleanly (docker-compose up -d → both "Up", docker-compose down → clean
   teardown, no orphans, no errors).
 
-Next up: Phase 2.5 — stateful SNI filtering (connection tracking).
-Phase 4 follows after Phase 2.5 is complete.
+Phase 2.5, Step 1 complete:
+- sidecar/conntrack.py written: PendingConnectionTracker with track,
+  is_pending, resolve, sweep_expired. TTL=10s. Zero external deps.
+- tests/test_conntrack.py: 23/23 passing.
+- Total tests: 282 (was 259).
+
+Next up: Phase 2.5 Step 2 — wire PendingConnectionTracker into
+sidecar/interceptor.py build_callback.
 ```
 
 ---
@@ -333,6 +350,7 @@ Phase 4 follows after Phase 2.5 is complete.
 - **Phase 3 integration complete (2026-08-06, commit 3457451)** — Added `demo/seed_phase3_data.py` (synthetic FLAG-event seeder covering all 4 detection axes with positive + negative controls) and `demo/run_phase3_demo.py` (end-to-end integration demo: seed → scan → template → replay → proposal write → summary → negative-control verification). Added `tests/test_seed_phase3_data.py` with 20 tests. Demo exits 0 cleanly. Total tests: 259 (was 239). No changes to detection_scanner.py, template_engine.py, dry_run_replay.py, policy.yaml, or the core daemon loop. One design note confirmed: unattributed network events (binary = 'unknown source') return replay_total=0 because `read_events_for_pair` queries by binary name — correct graceful-degradation behavior, documented in demo and understanding log.
 - **Handoff note refresh + gitignore conflict resolved (2026-08-07)** — Docs-only. Verification session confirmed HEAD is 4cf5c5e (five commits ahead of the stale 928e26b/3457451 note), 259/259 tests still passing. Overwrote §5 Handoff Note with current state. Documented that commit 872660e (fix(seed): hostname network events produced spurious IP-axis candidate) was a real code fix, not docs-only. Resolved the long-standing gitignore conflict: removed WARDEN_SPEC.md, WARDEN_BUILD_CONTEXT.md, and WARDEN_UNDERSTANDING_LOG.md from .gitignore — all three remain tracked in git (decision: working-memory files must stay tracked per §0's stated purpose). Moved the gitignore backlog item to Resolved.
 - **Phase 2.5 sequencing override (2026-08-07)** — Docs-only. Explicit human decision: Phase 2.5 (stateful SNI filtering) proceeds before Phase 4 (UI), overriding WARDEN_SPEC.md §7.3's stated default. §4 Roadmap updated; §6 conflict record added. Docker verified: both containers (jail + warden-sidecar) start and stop cleanly.
+- **Phase 2.5 Step 1 — PendingConnectionTracker (2026-08-07)** — `sidecar/conntrack.py` written: pure in-memory 4-tuple dict with 10s TTL. Methods: `track`, `is_pending`, `resolve`, `sweep_expired`. Zero Docker/NFQUEUE/Scapy dependency. `tests/test_conntrack.py`: 23 tests, 5 classes, all passing. Total tests: 282 (was 259). Not wired into `interceptor.py` yet — Step 2 is next.
 ---
 
 ## 8. Note on Future Files (do not build yet — context only)
