@@ -191,7 +191,6 @@ Near/mid-term:
 
 - find/cat argument-ordering bug — noticed during live testing, undiagnosed
 - demo/run_phase2_demo.py — stale, hardcodes pre-UDP-IPC ledger path
-- Three core docs (spec/build-context/understanding-log) — gitignore status unresolved, still tracked in git history
 - Phase 3 — FLAG-only ML inspector — named idea, not designed or built
 - Phase 3 — LLM-based explanation generation — open question, revisit only if templating proves insufficient
 - Phase 3 — CIDR-block clustering (/24 grouping) — add once exact-match rule proves too coarse against real data
@@ -212,7 +211,6 @@ This is a living, prioritized menu of the open state across the project:
 - **Open Minor Items:**
   - Stale `demo/run_phase2_demo.py`.
   - The `find`/`cat` argument-ordering bug (noticed earlier, still undiagnosed).
-  - The three core docs' gitignore status (flagged earlier, not yet resolved).
 
 ### Deferred Architecture / Long-Term (Not Scheduled)
 - **v2.0:** eBPF/Rust migration for network interceptor — `WARDEN_SPEC.md §13` (deferred production path).
@@ -223,6 +221,7 @@ This is a living, prioritized menu of the open state across the project:
 
 ### Resolved
 
+- **Three core docs gitignore conflict (2026-08-07):** Resolved. `WARDEN_SPEC.md`, `WARDEN_BUILD_CONTEXT.md`, and `WARDEN_UNDERSTANDING_LOG.md` were listed in `.gitignore` but also tracked in git history (the ignore entries were added after the files were already committed). Decision: removed all three from `.gitignore` and kept them tracked. Rationale: these are explicit working-memory files that the project depends on carrying forward across sessions and accounts (per §0's own stated purpose) — an untracked/ignored version defeats that purpose. `git ls-files` confirms they remain tracked; `git status` shows no change in tracked state.
 - **Phase 3 Prerequisite:** Two-Ledgers Gap + Correlation Gap. Fixed via UDP IPC from sidecar to host daemon, using a pre-shared token and loopback socket, enforcing a single-writer pattern and resolving macOS virtiofs `EOPNOTSUPP` and WAL split-brain issues. Sidecar IPTables modified to exempt its own UDP IPC packets from NFQUEUE interception. See `WARDEN_SPEC.md §7.4`.
 - **Phase 3 Tier 2 staging format/location:** Resolved. `proposed_rules` table in the daemon's existing SQLite DB — no new file, no new writer, consistent with the single-writer principle. Schema drafted in `WARDEN_SPEC.md §9`.
 - **Phase 5 agent integration layer design (2026-07-27):** Resolved. Hybrid architecture: single Unix domain socket exposed by the daemon, with CLI wrapper (`warden exec <cmd>`), Python SDK, approval CLI, and future dashboard all as clients of that socket. Scope boundary documented: targets custom-built agents with developer-controlled execution paths; sealed consumer products are not integrable without MCP-based overrides. See `WARDEN_SPEC.md §11`.
@@ -234,21 +233,40 @@ This is a living, prioritized menu of the open state across the project:
 ## 5. Handoff Note (overwrite this every session — do not append, replace)
 
 ```
-Phase 3 integration complete — 2026-08-06.
+Housekeeping pass — 2026-08-07.
 
 Verified state:
+- HEAD: 4cf5c5e (docs: add near-term TODO for bare-ls flag-as-block behavior).
 - 259/259 tests passing, 0 failing (python3 -m pytest tests/ confirmed).
-- Git tree clean: two commits made this session (928e26b docs, 3457451 feat).
-- Phase 3 fully complete: detection_scanner, template_engine, dry_run_replay,
-  approval_cli, seed_phase3_data, run_phase3_demo all built and tested.
-  demo/run_phase3_demo.py exits 0 with all assertions passing.
-  Negative controls (window-expired + volume-shy) verified silent.
-  Unattributed network events ('unknown source') correctly skip replay_total
-  assertion — known design behavior, documented in demo script.
-- demo/run_phase2_demo.py: CONFIRMED STALE/BROKEN (pre-UDP-IPC ledger path).
-  Fix deferred — known backlog item, not a regression.
-- Phase 5 Part 2 tracking corrected: Approval CLI is a Phase 3 component;
-  only Python SDK and Dashboard remain under Phase 5 Part 2.
+- Git tree clean after this session's single docs commit.
+- demo/run_phase3_demo.py: exits 0 with all assertions passing (re-confirmed
+  this session).
+- demo/run_phase2_demo.py: stale/broken status NOT re-verified this session —
+  Docker Desktop was not running. Claim carried forward from prior session.
+  Fix remains deferred — known backlog item, not a regression.
+
+Context on the five commits that landed after the 2026-08-06 handoff note
+(commits 928e26b/3457451) before this session's housekeeping commit:
+- 4c271fe docs: update build context and understanding log for Phase 3
+  integration complete (docs-only)
+- 872660e fix(seed): hostname network events produced spurious IP-axis
+  candidate — REAL CODE FIX to demo/seed_phase3_data.py, not docs-only.
+  Sets dst_ip=None for hostname-typed network events so they are only
+  detected on the hostname axis. Tests still pass 259/259.
+- a0ae272 docs: add Phase 2.5 backlog note regarding seed data realism
+  (docs-only)
+- c7fd987 docs: add Phase 4 UX findings note from live agent validation
+  run (docs-only)
+- 4cf5c5e docs: add near-term TODO for bare-ls flag-as-block behavior
+  (docs-only)
+
+Housekeeping changes made this session:
+- .gitignore: removed contradictory ignore entries for WARDEN_SPEC.md,
+  WARDEN_BUILD_CONTEXT.md, WARDEN_UNDERSTANDING_LOG.md (all three remain
+  tracked in git — the ignore entries predated this and were in conflict).
+- §5 Handoff Note: replaced stale 928e26b/3457451 note with this note.
+- §4 Backlog: gitignore conflict item removed; moved to §4/§6 Resolved.
+- §7 Changelog: one entry appended.
 
 Next open item on the roadmap: Phase 2.5 (stateful SNI filtering) or
 Phase 4 (minimalist UI — requires design/mockup gate first).
@@ -303,6 +321,7 @@ Phase 4 (minimalist UI — requires design/mockup gate first).
 - **Repo audit + doc reconciliation (2026-08-06)** — Docs-only. Ran full verification pass against `WARDEN_BUILD_CONTEXT.md §3` and §5 claims. Corrected Phase 3 test count (35→38, extra 3 in `TestApprovalCliGate`), corrected total test count annotation (237→239), refreshed §5 Handoff Note with verified state, and appended the two previously unrecorded doc commits (fdb05f9, bf0bed5) to the changelog. `demo/run_phase2_demo.py` stale status confirmed, no fix applied. `docker-compose up/down` verified clean.
 - **Phase 5 Part 2 tracking corrected (2026-08-06, commit 928e26b)** — Docs-only. Approval CLI (`daemon/advisor/approval_cli.py`) was delivered as a Phase 3 component during the Phase 3 advisor build, not a Phase 5 component. The `TestApprovalCliGate` test class tests its `check_approve_permissive_gate()` pure function, which correctly implements §9.5 asymmetric scrutiny. Updated three Phase 5 Part 2 references in §3 note, Roadmap, and Old Backlog to reflect this. Only Python SDK and Dashboard remain outstanding under Phase 5 Part 2.
 - **Phase 3 integration complete (2026-08-06, commit 3457451)** — Added `demo/seed_phase3_data.py` (synthetic FLAG-event seeder covering all 4 detection axes with positive + negative controls) and `demo/run_phase3_demo.py` (end-to-end integration demo: seed → scan → template → replay → proposal write → summary → negative-control verification). Added `tests/test_seed_phase3_data.py` with 20 tests. Demo exits 0 cleanly. Total tests: 259 (was 239). No changes to detection_scanner.py, template_engine.py, dry_run_replay.py, policy.yaml, or the core daemon loop. One design note confirmed: unattributed network events (binary = 'unknown source') return replay_total=0 because `read_events_for_pair` queries by binary name — correct graceful-degradation behavior, documented in demo and understanding log.
+- **Handoff note refresh + gitignore conflict resolved (2026-08-07)** — Docs-only. Verification session confirmed HEAD is 4cf5c5e (five commits ahead of the stale 928e26b/3457451 note), 259/259 tests still passing. Overwrote §5 Handoff Note with current state. Documented that commit 872660e (fix(seed): hostname network events produced spurious IP-axis candidate) was a real code fix, not docs-only. Resolved the long-standing gitignore conflict: removed WARDEN_SPEC.md, WARDEN_BUILD_CONTEXT.md, and WARDEN_UNDERSTANDING_LOG.md from .gitignore — all three remain tracked in git (decision: working-memory files must stay tracked per §0's stated purpose). Moved the gitignore backlog item to Resolved.
 ---
 
 ## 8. Note on Future Files (do not build yet — context only)
