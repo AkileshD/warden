@@ -172,10 +172,11 @@ warden/
 ## 4. Roadmap — Next Steps
 
 Near/mid-term:
-- Phase 2.5 — Stateful SNI filtering (hostname-based network ALLOW rules)
+- **Phase 2.5 — Stateful SNI filtering (hostname-based network ALLOW rules) — IN PROGRESS**
+  NOTE: WARDEN_SPEC.md §7.3 originally stated Phase 2.5 is "scheduled AFTER Phases 1-4 are complete." This sequencing has been explicitly overridden by the human (2026-08-07): Phase 2.5 proceeds before Phase 4. See §6 for the conflict record.
   - TODO(phase2.5): demo/seed_phase3_data.py's _make_network_blob() now sets dst_ip=None for hostname-typed network events (fixed in commit 872660e — previously a hardcoded placeholder IP caused a spurious IP-axis detection candidate). This correctly isolates the hostname axis for Phase 3's detection scanner, but it means the seeder no longer models a realistic packet shape: per WARDEN_SPEC.md §7.2, a real TLS ClientHello always carries both an IP and an SNI hostname together — they don't come as one-or-the-other. If Phase 2.5's conntrack/SNI work needs synthetic seed data that exercises both fields co-occurring on the same event (e.g. to test retroactive-enforcement logic against a resolved IP+hostname pair), this seeder should not be reused as-is without revisiting that design. Not a blocker for Phase 3, which only needed axis isolation — flagging before Phase 2.5 starts so it isn't rediscovered the hard way.
 - Phase 5 Part 2 — Python SDK, Dashboard client (deferred, confirmed still required). NOTE: Approval CLI was delivered early as a Phase 3 component (`daemon/advisor/approval_cli.py`); it is no longer outstanding under Phase 5 Part 2.
-- Phase 4 — Minimalist UI/dashboard (needs design/ mockup gate first)
+- Phase 4 — Minimalist UI/dashboard (next after Phase 2.5; needs design/ mockup gate first)
   - NOTE(phase4): Live agent validation run (2026-08-06, Phases 1+2) surfaced a real UX finding worth remembering when Phase 4's UI is designed. A bare `ls` run outside ./project/** (i.e. from the daemon's root work_dir) does not match the project-scope allow rule in policy.yaml, and falls through to default_action: flag — which Phase 1's core loop currently treats as block-and-log. This is correct behavior per the policy as written (the catch-all allow rule is genuinely scoped to ./project/**, not the whole filesystem), not a bug. But it means one of the most harmless, common shell commands an agent can run gets silently faked rather than executed for real whenever the agent is working outside the project directory. This will likely be a very common FLAG in real usage and should be visible/obvious in the Phase 4 UI (e.g. distinguishable from genuinely suspicious FLAGs) rather than looking alarming by default. Not a Phase 1 fix — just a UX consideration to carry forward. Full validation run details: 7/7 expected outcomes confirmed live against a real Groq-backed agent across Phases 1, 2, and (implicitly, via the control socket) 5.
 - TODO(near-term): Fix the bare-`ls`-outside-project-scope FLAG-as-block behavior found during the 2026-08-06 live agent validation run. Currently any command run outside ./project/** that isn't explicitly matched by a policy.yaml rule falls through to default_action: flag, which Phase 1 treats as block-and-fake-success — this includes completely harmless read-only commands like `ls`, `pwd`, or `cat` on non-secret files. This is a policy.yaml data change, not a code change, consistent with WARDEN_SPEC.md §4's "policy is data, not code" principle.
 
@@ -268,8 +269,15 @@ Housekeeping changes made this session:
 - §4 Backlog: gitignore conflict item removed; moved to §4/§6 Resolved.
 - §7 Changelog: one entry appended.
 
-Next open item on the roadmap: Phase 2.5 (stateful SNI filtering) or
-Phase 4 (minimalist UI — requires design/mockup gate first).
+Next session decisions made (2026-08-07, post-housekeeping):
+- Phase 2.5 sequencing explicitly overridden: Phase 2.5 proceeds before
+  Phase 4. Explicit human override of WARDEN_SPEC.md §7.3. Recorded in §6.
+- Docker verified: both containers (jail + warden-sidecar) start and stop
+  cleanly (docker-compose up -d → both "Up", docker-compose down → clean
+  teardown, no orphans, no errors).
+
+Next up: Phase 2.5 — stateful SNI filtering (connection tracking).
+Phase 4 follows after Phase 2.5 is complete.
 ```
 
 ---
@@ -285,6 +293,8 @@ Phase 4 (minimalist UI — requires design/mockup gate first).
 **RESOLVED** — Phase 3 detection grouping (network-origin binary attribution). Decided to use **asymmetric grouping**: Shell-origin events are grouped by `(binary, destination)`, but network-origin events are grouped by `(destination)` alone (ignoring binary). This is because network enforcement (`policy.yaml` `network_rules`) can only ever act on destination/port, never on the originating binary. Merging network events across binaries for a destination-only threshold provides the correct signal. (Related context: this is the same class of grouping bug as the separate-axes entry above). For human context, `matched_binary` in `proposed_rules` and the reasoning template will still attempt to show the real originating binary(s) via the `action_id` correlation link on a best-effort basis, degrading gracefully if unmatched, but this must not affect the threshold count itself.
 
 **NOTE (not a conflict):** `ls /tmp` gets FLAG (default) not ALLOW in the demo because /tmp is outside `./project/**`. This is correct policy — the project-dir allow rule only covers `./project/**`. Adding a broader allow rule for read-only binaries outside the project is a policy decision, not an architecture decision. Document in README if confusing.
+
+**RESOLVED** — Phase 2.5 sequencing vs. WARDEN_SPEC.md §7.3. The spec states Phase 2.5 is "scheduled AFTER Phases 1-4 are complete, not immediately following Phase 2 — it's a hardening pass, not a blocker." The §4 Roadmap listed it as an option available now alongside Phase 4, creating an ambiguous conflict. Resolution (2026-08-07): explicit human override — Phase 2.5 proceeds before Phase 4. This is not a reinterpretation of the spec; it is a deliberate deviation from the spec's stated default sequencing, chosen because the stateful SNI limitation is a meaningful functional gap that affects real usage now, and Phase 4 (UI) depends on the design/mockup gate which is not yet started. WARDEN_SPEC.md §7.3's scheduling note is superseded for this project by this decision. §4 Roadmap updated accordingly.
 
 ---
 
@@ -322,6 +332,7 @@ Phase 4 (minimalist UI — requires design/mockup gate first).
 - **Phase 5 Part 2 tracking corrected (2026-08-06, commit 928e26b)** — Docs-only. Approval CLI (`daemon/advisor/approval_cli.py`) was delivered as a Phase 3 component during the Phase 3 advisor build, not a Phase 5 component. The `TestApprovalCliGate` test class tests its `check_approve_permissive_gate()` pure function, which correctly implements §9.5 asymmetric scrutiny. Updated three Phase 5 Part 2 references in §3 note, Roadmap, and Old Backlog to reflect this. Only Python SDK and Dashboard remain outstanding under Phase 5 Part 2.
 - **Phase 3 integration complete (2026-08-06, commit 3457451)** — Added `demo/seed_phase3_data.py` (synthetic FLAG-event seeder covering all 4 detection axes with positive + negative controls) and `demo/run_phase3_demo.py` (end-to-end integration demo: seed → scan → template → replay → proposal write → summary → negative-control verification). Added `tests/test_seed_phase3_data.py` with 20 tests. Demo exits 0 cleanly. Total tests: 259 (was 239). No changes to detection_scanner.py, template_engine.py, dry_run_replay.py, policy.yaml, or the core daemon loop. One design note confirmed: unattributed network events (binary = 'unknown source') return replay_total=0 because `read_events_for_pair` queries by binary name — correct graceful-degradation behavior, documented in demo and understanding log.
 - **Handoff note refresh + gitignore conflict resolved (2026-08-07)** — Docs-only. Verification session confirmed HEAD is 4cf5c5e (five commits ahead of the stale 928e26b/3457451 note), 259/259 tests still passing. Overwrote §5 Handoff Note with current state. Documented that commit 872660e (fix(seed): hostname network events produced spurious IP-axis candidate) was a real code fix, not docs-only. Resolved the long-standing gitignore conflict: removed WARDEN_SPEC.md, WARDEN_BUILD_CONTEXT.md, and WARDEN_UNDERSTANDING_LOG.md from .gitignore — all three remain tracked in git (decision: working-memory files must stay tracked per §0's stated purpose). Moved the gitignore backlog item to Resolved.
+- **Phase 2.5 sequencing override (2026-08-07)** — Docs-only. Explicit human decision: Phase 2.5 (stateful SNI filtering) proceeds before Phase 4 (UI), overriding WARDEN_SPEC.md §7.3's stated default. §4 Roadmap updated; §6 conflict record added. Docker verified: both containers (jail + warden-sidecar) start and stop cleanly.
 ---
 
 ## 8. Note on Future Files (do not build yet — context only)
