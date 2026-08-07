@@ -161,6 +161,24 @@ class TestRealPolicy:
         verdict = eval_with_inspector(engine, "python3 /tmp/evil.py")
         assert verdict.decision == Decision.FLAG  # default_action
 
+    def test_bare_ls_outside_project_is_allowed(self):
+        """1. `ls` outside ./project/** now ALLOWs (previously FLAG)."""
+        engine = RuleEngine(self.POLICY)
+        verdict = eval_with_inspector(engine, "ls")
+        assert verdict.decision == Decision.ALLOW
+
+    def test_cat_secret_outside_project_is_blocked(self):
+        """2. `cat` on a secret pattern outside ./project/** still BLOCKs."""
+        engine = RuleEngine(self.POLICY)
+        verdict = eval_with_inspector(engine, "cat /home/user/.aws/credentials")
+        assert verdict.decision == Decision.BLOCK
+
+    def test_bare_unknown_command_outside_project_is_flagged(self):
+        """3. Commands not in the allowlist still fall through to FLAG."""
+        engine = RuleEngine(self.POLICY)
+        verdict = eval_with_inspector(engine, "env")
+        assert verdict.decision == Decision.FLAG
+
 
 # ── Default action ────────────────────────────────────────────────────────────
 

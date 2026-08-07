@@ -64,6 +64,17 @@ rules:
     action: allow
     risk: low
 
+  # ── Safe read-only commands (bare invocations only) ──────────────────────────
+  # WHY path_scope: [] — An empty path_scope matches ONLY when the command has
+  # zero path arguments. This allows bare `ls` or `pwd` outside the project
+  # directory, and allows bare `cat`/`head`/`tail` (which just read stdin)
+  # without unintentionally allowing `cat /etc/passwd`.
+  - match:
+      binary: ["ls", "pwd", "cat", "head", "tail"]
+      path_scope: []
+    action: allow
+    risk: low
+
 # Anything not matched by the rules above gets this treatment.
 # FLAG means: log prominently, treat as block until Phase 3 exists.
 # WHY FLAG and not BLOCK: unmatched commands aren't necessarily dangerous —
