@@ -97,7 +97,7 @@ warden/
 
 > Update this every session. Mark each item `not_started` / `in_progress` / `done` (done = has passing tests, not just exists).
 
-**Active phase:** Phase 1 complete; Phase 2 complete; Phase 3 complete. Validation Milestone complete. **Phase 2.5 (stateful SNI) — IN PROGRESS** (sequencing override: precedes Phase 4, per §6 decision 2026-08-07).
+**Active phase:** Phase 1 complete; Phase 2 complete; Phase 3 complete. Validation Milestone complete. Phase 2.5 complete. **Phase 4 (Minimalist UI) — NEXT** (sequencing override resolved, resuming default sequence).
 
 ### Phase 3 — The Smart Policy Loop ✅ COMPLETE
 
@@ -115,16 +115,17 @@ warden/
 | `tests/test_phase3_advisor.py` | done | 38 tests verifying all Phase 3 components, including strict isolation of axes during detection and replay. (Extra 3 tests vs. earlier count are in `TestApprovalCliGate`.) |
 | `tests/test_seed_phase3_data.py` | done | 20 tests verifying seed row counts, all four positive-control detection axes fire, all negative controls are silent, and SEED_SCENARIOS metadata is internally consistent. |
 
-### Phase 2.5 — Stateful SNI Filtering 🔨 IN PROGRESS
+### Phase 2.5 — Stateful SNI Filtering ✅ COMPLETE
 
-*Note: Explicit human sequencing override — Phase 2.5 precedes Phase 4. See §6 RESOLVED entry (2026-08-07). Architecture: connection tracking in sidecar to allow provisional SYN → retroactive SNI verdict on ClientHello. Built incrementally: Step 1 = state primitive; Step 2 = wire into callback; Step 3 = demo + docs.*
+*Note: Explicit human sequencing override — Phase 2.5 preceded Phase 4. See §6 RESOLVED entry (2026-08-07). Architecture: connection tracking in sidecar to allow provisional SYN → retroactive SNI verdict on ClientHello. Built incrementally across 4 steps.*
 
 | Component | Status | Notes |
 |---|---|---|
-| `sidecar/conntrack.py` | done | `PendingConnectionTracker` — pure in-memory 4-tuple dict with TTL. Methods: `track`, `is_pending`, `resolve`, `sweep_expired`. Zero Docker/NFQUEUE/Scapy dependency. TTL=10s (SYN-to-ClientHello gap). Not wired into interceptor.py yet. |
-| `tests/test_conntrack.py` | done | 23 tests across 5 test classes: track/resolve round-trip, is_pending state, sweep_expired boundary conditions, `__len__`, and TTL constant bounds. All pass without any container running. |
-| Step 2 — wire into `sidecar/interceptor.py` | done | `build_callback` extended with Path A (bare SYN to hostname-ruled port: provisional accept + track, no log), Path B (ClientHello on tracked connection: resolve + evaluate via NetworkInspector + enforce), and per-packet sweep (expired entries logged as BLOCK with distinct `REASON_PROVISIONAL_BLOCK_TTL`). Three new module-level pure helpers: `_is_syn`, `_has_hostname_rules`, `_make_event_payload`. Stateless path for non-hostname-rule traffic completely unchanged. RISK tagged: Path B BLOCK drops only the ClientHello — TCP session not terminated (RST is Step 3). |
-| `tests/test_interceptor_conntrack.py` | done | 26 tests across 5 classes: `TestIsSyn`, `TestHasHostnameRules`, `TestPathA`, `TestPathB`, `TestSweep`, `TestStatelessPath`. No Docker/NFQUEUE required. All pass. |
+| `sidecar/conntrack.py` | done | `PendingConnectionTracker` (Step 1) and `BlockedConnectionTracker` (Step 4). Pure in-memory dicts with TTL tracking. Zero external dependencies. (26 tests total: 23 for Step 1, 3 for Step 4) |
+| `sidecar/interceptor.py` | done | Extended across Steps 2-4: Path A (provisional SYN accept), Path B (ClientHello resolve + ALLOW/BLOCK), per-packet TTL sweep, and post-BLOCK containment check (unconditional drop for blocked 4-tuples). (28 tests total: 26 for Step 2, 2 for Step 4 integration) |
+| `daemon/parser/packet_parser.py` | done | Prerequisite work (Step 3): extracted `src_ip`/`src_port`/`seq`/`ack` from IP/TCP layers. (Shared tests) |
+| `sidecar/rst_injector.py` | done | Step 3: `build_rst_packet` (pure construction with Scapy) + `send_rst` (isolated raw-socket send via `AF_INET`/`SOCK_RAW`). Only place in the codebase that opens a raw socket. (3 unit tests) |
+| `docker-compose.yml` | done | `NET_RAW` capability granted, scoped *only* to `warden-sidecar` (jail untouched) to enable RST injection. |
 
 ### Phase 5 — Agent Integration Layer (Part 1) ✅ COMPLETE
 
@@ -237,64 +238,18 @@ This is a living, prioritized menu of the open state across the project:
 ## 5. Handoff Note (overwrite this every session — do not append, replace)
 
 ```
-Housekeeping pass — 2026-08-07.
+Phase 2.5 closeout — 2026-08-07.
 
 Verified state:
-- HEAD: 4cf5c5e (docs: add near-term TODO for bare-ls flag-as-block behavior).
-- 259/259 tests passing, 0 failing (python3 -m pytest tests/ confirmed).
-- Git tree clean after this session's single docs commit.
-- demo/run_phase3_demo.py: exits 0 with all assertions passing (re-confirmed
-  this session).
-- demo/run_phase2_demo.py: stale/broken status NOT re-verified this session —
-  Docker Desktop was not running. Claim carried forward from prior session.
-  Fix remains deferred — known backlog item, not a regression.
+- HEAD: 722270a
+- 336/336 tests passing, 0 failing (python3 -m pytest tests/ confirmed).
+- Phase 2.5 is fully complete across all 4 steps.
 
-Context on the five commits that landed after the 2026-08-06 handoff note
-(commits 928e26b/3457451) before this session's housekeeping commit:
-- 4c271fe docs: update build context and understanding log for Phase 3
-  integration complete (docs-only)
-- 872660e fix(seed): hostname network events produced spurious IP-axis
-  candidate — REAL CODE FIX to demo/seed_phase3_data.py, not docs-only.
-  Sets dst_ip=None for hostname-typed network events so they are only
-  detected on the hostname axis. Tests still pass 259/259.
-- a0ae272 docs: add Phase 2.5 backlog note regarding seed data realism
-  (docs-only)
-- c7fd987 docs: add Phase 4 UX findings note from live agent validation
-  run (docs-only)
-- 4cf5c5e docs: add near-term TODO for bare-ls flag-as-block behavior
-  (docs-only)
+Phase 4 is next and is gated behind the design-spec -> human-mockup -> code sequence per WARDEN_SPEC.md's Phase 4 section. **NO Phase 4 code should be written until that gate is satisfied.**
 
-Housekeeping changes made this session (2026-08-07, post-housekeeping):
-- .gitignore: removed contradictory ignore entries for WARDEN_SPEC.md,
-  WARDEN_BUILD_CONTEXT.md, WARDEN_UNDERSTANDING_LOG.md (all three remain
-  tracked in git — the ignore entries predated this and were in conflict).
-- §5 Handoff Note: replaced stale 928e26b/3457451 note with this note.
-- §4 Backlog: gitignore conflict item removed; moved to §4/§6 Resolved.
-- §7 Changelog: entries appended.
-
-Decisions made this session (2026-08-07):
-- Phase 2.5 sequencing explicitly overridden: Phase 2.5 proceeds before
-  Phase 4. Explicit human override of WARDEN_SPEC.md §7.3. Recorded in §6.
-- Docker verified: both containers (jail + warden-sidecar) start and stop
-  cleanly (docker-compose up -d → both "Up", docker-compose down → clean
-  teardown, no orphans, no errors).
-
-Phase 2.5, Step 1 complete:
-- sidecar/conntrack.py written: PendingConnectionTracker with track,
-  is_pending, resolve, sweep_expired. TTL=10s. Zero external deps.
-- tests/test_conntrack.py: 23/23 passing.
-- Total tests after Step 1: 282 (was 259).
-
-Phase 2.5, Step 2 complete:
-- sidecar/interceptor.py updated: Path A (provisional SYN accept + track,
-  no log), Path B (ClientHello resolve + evaluate + enforce + log with
-  distinct reason strings), per-packet sweep (TTL-expiry BLOCK log).
-  Stateless path for non-hostname-rule traffic unchanged.
-  RISK tagged: Path B BLOCK drops ClientHello only — RST is Step 3.
-- tests/test_interceptor_conntrack.py: 26/26 passing.
-- Total tests after Step 2: 308 (was 282).
-
-Next up: Phase 2.5 Step 3 — RST injection on Path B BLOCK.
+Two known limitations (unfixable by design, not open bugs):
+1. RST delivery cannot be confirmed by TCP itself — this is inherent to spoofed RST injection, not a gap. Containment via BlockedConnectionTracker is the mitigation, not a fix. Do not mistake this for a bug to be fixed in a future session.
+2. NET_RAW is now granted to the sidecar. This was explicitly scoped to sidecar/rst_injector.py. Do not casually extend raw-socket usage outside rst_injector.py without recognizing the deliberate isolation choice made here.
 ```
 
 ---
@@ -311,7 +266,7 @@ Next up: Phase 2.5 Step 3 — RST injection on Path B BLOCK.
 
 **NOTE (not a conflict):** `ls /tmp` gets FLAG (default) not ALLOW in the demo because /tmp is outside `./project/**`. This is correct policy — the project-dir allow rule only covers `./project/**`. Adding a broader allow rule for read-only binaries outside the project is a policy decision, not an architecture decision. Document in README if confusing.
 
-**RESOLVED** — Phase 2.5 sequencing vs. WARDEN_SPEC.md §7.3. The spec states Phase 2.5 is "scheduled AFTER Phases 1-4 are complete, not immediately following Phase 2 — it's a hardening pass, not a blocker." The §4 Roadmap listed it as an option available now alongside Phase 4, creating an ambiguous conflict. Resolution (2026-08-07): explicit human override — Phase 2.5 proceeds before Phase 4. This is not a reinterpretation of the spec; it is a deliberate deviation from the spec's stated default sequencing, chosen because the stateful SNI limitation is a meaningful functional gap that affects real usage now, and Phase 4 (UI) depends on the design/mockup gate which is not yet started. WARDEN_SPEC.md §7.3's scheduling note is superseded for this project by this decision. §4 Roadmap updated accordingly.
+**RESOLVED** — Phase 2.5 sequencing vs. WARDEN_SPEC.md §7.3. The spec states Phase 2.5 is "scheduled AFTER Phases 1-4 are complete, not immediately following Phase 2 — it's a hardening pass, not a blocker." The §4 Roadmap listed it as an option available now alongside Phase 4, creating an ambiguous conflict. Resolution (2026-08-07): explicit human override — Phase 2.5 proceeds before Phase 4. This is not a reinterpretation of the spec; it is a deliberate deviation from the spec's stated default sequencing, chosen because the stateful SNI limitation is a meaningful functional gap that affects real usage now, and Phase 4 (UI) depends on the design/mockup gate which is not yet started. WARDEN_SPEC.md §7.3's scheduling note is superseded for this project by this decision. §4 Roadmap updated accordingly. Update (2026-08-07): Phase 2.5 is now fully complete. The deviation is finished, and Phase 4 is the active next phase, resuming the original spec's default sequencing from here.
 **RESOLVED** — Bare `ls` outside project scope FLAG-as-block bug. Found during live agent validation run (2026-08-06). Resolved (2026-08-07) by implementing Option 1: added a narrow `path_scope: []` (empty path scope, meaning zero path arguments) allow rule for `ls`, `pwd`, `cat`, `head`, `tail`. This ensures bare invocations of these read-only commands are allowed anywhere, while still blocking them if they target secret patterns (which have paths), preserving the default-deny design and minimizing the blast radius. Tested with three new tests in `TestRealPolicy`.
 
 ---
@@ -355,6 +310,7 @@ Next up: Phase 2.5 Step 3 — RST injection on Path B BLOCK.
 - **Phase 2.5 Step 2 — conntrack wired into interceptor (2026-08-07)** — `sidecar/interceptor.py` rewritten: Path A (bare SYN to hostname-ruled port → provisional accept + track, no log), Path B (ClientHello on tracked connection → resolve + evaluate via NetworkInspector + enforce + log), per-packet `sweep_expired` (TTL-expiry entries logged as BLOCK with reason `REASON_PROVISIONAL_BLOCK_TTL`). Three new module-level pure helpers: `_is_syn`, `_has_hostname_rules`, `_make_event_payload`. Stateless path for IP-only traffic unchanged. RISK tagged: Path B BLOCK drops ClientHello only, not the full TCP session — RST injection is Step 3. `tests/test_interceptor_conntrack.py`: 26 tests, 6 classes, all passing. Total tests: 308 (was 282).
 - **Phase 2.5 Step 3 prerequisite: real 4-tuple conn_key (2026-08-07)** — Added `src_ip` and `src_port` to `ParsedNetworkAction` (extracted from Scapy IP/TCP/UDP layers in `packet_parser.py`) and wired them into `PendingConnectionTracker`'s `conn_key` in `interceptor.py`. The old `(dst,dst,dst,dst)` placeholder would collide if two connections hit the same destination concurrently. Added `TestConcurrentConnections` to `test_interceptor_conntrack.py` proving two SYNs from different source ports are correctly tracked and resolved independently. Total tests: 321 (was 308).
 - **Bare `ls` FLAG bug fix (2026-08-07)** — Resolved the `ls`-outside-project-scope issue by adding a targeted `path_scope: []` allow rule to `policy.yaml` for bare invocations of harmless read-only commands (`ls`, `pwd`, `cat`, `head`, `tail`). Added three new tests to `TestRealPolicy` proving the empty-paths scope semantics. Total tests: 324 (was 321).
+- **Phase 2.5 fully complete (2026-08-07)** — Spanned multiple sessions across 4 steps: (1) state primitive, (2) callback wiring, (3) RST injection with prerequisite fixes, (4) post-BLOCK containment. This arc also resolved the bare `ls` FLAG bug, the WARDEN_SPEC.md/.gitignore conflict, and the 2.5/4 sequencing override. The stateful SNI capability is now live. Total tests: 336 (was 324).
 ---
 
 ## 8. Note on Future Files (do not build yet — context only)
