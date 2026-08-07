@@ -67,6 +67,7 @@ from daemon.rules.engine import RuleEngine
 from daemon.inspectors.base import Decision, Verdict
 
 from sidecar.conntrack import PendingConnectionTracker, DEFAULT_TTL_SECONDS
+from sidecar.rst_injector import build_rst_packet, send_rst
 
 POLICY_PATH = os.environ.get("WARDEN_POLICY_PATH", "daemon/rules/policy.yaml")
 WARDEN_UDP_HOST = os.environ.get("WARDEN_UDP_HOST", "host.docker.internal")
@@ -401,19 +402,32 @@ def build_callback(
                     # SYN was provisionally accepted in Path A. Dropping only the
                     # ClientHello does not terminate the TCP connection — the client
                     # may observe a timeout or retry. Clean termination via TCP RST
-                    # is Step 3; do not add RST logic here.
+                    # is handled below.
+                    packet.drop()
+
+                    # Phase 2.5 Step 3: RST injection
+                    rst_bytes = build_rst_packet(
+                        src_ip=parsed.src_ip,
+                        src_port=parsed.src_port,
+                        dst_ip=parsed.dst_ip,
+                        dst_port=parsed.dst_port,
+                        seq=parsed.seq,
+                        ack=parsed.ack,
+                    )
+                    rst_success = send_rst(rst_bytes, dst_ip=parsed.src_ip)
+                    rst_status = "(RST succeeded)" if rst_success else "(RST failed)"
+
                     result_verdict = Verdict(
                         decision=Decision.BLOCK,
-                        reason=REASON_PROVISIONAL_BLOCK_SNI,
+                        reason=f"{REASON_PROVISIONAL_BLOCK_SNI} {rst_status}",
                         source_inspector="ConnTrack+NetworkInspector",
                     )
                     _send_event(result_verdict, parsed)
                     print(
                         f"[warden-sidecar] Path B BLOCK: {parsed.hostname_or_sni} "
-                        f"not on allowlist — ClientHello dropped",
+                        f"not on allowlist — ClientHello dropped {rst_status}",
                         flush=True,
                     )
-                    packet.drop()
                 return
 
         # ── STATELESS PATH — all other traffic (unchanged from Phase 2) ───────

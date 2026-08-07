@@ -325,7 +325,9 @@ class TestPathB:
             raise OSError(f"unexpected open: {path}")
 
         with patch("socket.socket", return_value=mock_sock), \
-             patch("builtins.open", side_effect=_fake_open):
+             patch("builtins.open", side_effect=_fake_open), \
+             patch("sidecar.interceptor.build_rst_packet", return_value=b"rst") as mock_build, \
+             patch("sidecar.interceptor.send_rst", return_value=True) as mock_send:
             callback = build_callback(
                 parser, inspector, engine,
                 network_rules=network_rules,
@@ -342,36 +344,51 @@ class TestPathB:
 
         import json
         parsed_payloads = [json.loads(p) for p in sent_payloads]
-        return ch_pkt, parsed_payloads
+        return ch_pkt, parsed_payloads, mock_build, mock_send
 
     def test_matching_sni_produces_allow(self):
-        ch_pkt, payloads = self._run_syn_then_client_hello(sni=ALLOWED_HOST)
+        ch_pkt, payloads, _, _ = self._run_syn_then_client_hello(sni=ALLOWED_HOST)
         assert ch_pkt.accepted, "ClientHello with matching SNI must be accepted"
         assert not ch_pkt.dropped
 
     def test_matching_sni_emits_allow_event(self):
-        _, payloads = self._run_syn_then_client_hello(sni=ALLOWED_HOST)
+        _, payloads, _, _ = self._run_syn_then_client_hello(sni=ALLOWED_HOST)
         # Only one event should have been sent (the Path B ALLOW; SYN sends nothing)
         assert len(payloads) == 1
         assert payloads[0]["verdict"]["decision"] == "ALLOW"
 
     def test_matching_sni_reason_is_provisional_allow(self):
-        _, payloads = self._run_syn_then_client_hello(sni=ALLOWED_HOST)
+        _, payloads, _, _ = self._run_syn_then_client_hello(sni=ALLOWED_HOST)
         assert payloads[0]["verdict"]["reason"] == REASON_PROVISIONAL_ALLOW_SNI
 
     def test_non_matching_sni_produces_block(self):
-        ch_pkt, payloads = self._run_syn_then_client_hello(sni=BLOCKED_HOST)
+        ch_pkt, payloads, _, _ = self._run_syn_then_client_hello(sni=BLOCKED_HOST)
         assert ch_pkt.dropped, "ClientHello with non-matching SNI must be dropped"
         assert not ch_pkt.accepted
 
     def test_non_matching_sni_emits_block_event(self):
-        _, payloads = self._run_syn_then_client_hello(sni=BLOCKED_HOST)
+        _, payloads, _, _ = self._run_syn_then_client_hello(sni=BLOCKED_HOST)
         assert len(payloads) == 1
         assert payloads[0]["verdict"]["decision"] == "BLOCK"
 
     def test_non_matching_sni_reason_is_provisional_block_sni(self):
-        _, payloads = self._run_syn_then_client_hello(sni=BLOCKED_HOST)
-        assert payloads[0]["verdict"]["reason"] == REASON_PROVISIONAL_BLOCK_SNI
+        _, payloads, _, _ = self._run_syn_then_client_hello(sni=BLOCKED_HOST)
+        assert payloads[0]["verdict"]["reason"].startswith(REASON_PROVISIONAL_BLOCK_SNI)
+        assert "(RST succeeded)" in payloads[0]["verdict"]["reason"]
+
+    def test_non_matching_sni_triggers_rst_injection(self):
+        _, payloads, mock_build, mock_send = self._run_syn_then_client_hello(sni=BLOCKED_HOST, dst_ip="93.184.216.34")
+        # Assert build_rst_packet was called with correct swapped fields
+        mock_build.assert_called_once_with(
+            src_ip="192.168.1.10",   # Jail IP (from _make_tcp_syn default)
+            src_port=54321,          # Jail Port (from _make_tcp_syn default)
+            dst_ip="93.184.216.34",  # Server IP
+            dst_port=HOSTNAME_PORT,
+            seq=0,                   # Default from Scapy when not specified
+            ack=0,
+        )
+        # Assert send_rst was called with the built bytes
+        mock_send.assert_called_once_with(b"rst", dst_ip="192.168.1.10")
 
     def test_tracker_entry_is_consumed_after_path_b(self):
         """After Path B resolves the entry, the tracker is empty."""
