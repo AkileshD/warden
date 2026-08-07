@@ -157,3 +157,47 @@ class PendingConnectionTracker:
     def __len__(self) -> int:
         """Return the number of currently-tracked connections."""
         return len(self._pending)
+
+
+# WHY 60s: a blocked connection needs to outlast the client's TCP retransmission
+# backoff so we don't accidentally let a late retransmit through if it lacks an SNI.
+# 60 seconds easily covers standard OS initial retransmit timers for a dead connection.
+DEFAULT_BLOCKED_TTL_SECONDS: float = 60.0
+
+class BlockedConnectionTracker:
+    """
+    Tracks TCP connections that have been explicitly blocked (e.g. via Path B).
+    Any subsequent packets on these 4-tuples are unconditionally dropped.
+    """
+
+    def __init__(self) -> None:
+        self._blocked: Dict[ConnKey, float] = {}
+
+    def block(self, conn_key: ConnKey, expires_at: float) -> None:
+        """
+        Record a blocked connection.
+        
+        Args:
+            conn_key:   4-tuple (src_ip, src_port, dst_ip, dst_port).
+            expires_at: Unix timestamp after which this block expires.
+        """
+        self._blocked[conn_key] = expires_at
+
+    def is_blocked(self, conn_key: ConnKey) -> bool:
+        """Return True if conn_key is currently blocked."""
+        return conn_key in self._blocked
+
+    def sweep_expired(self, now: float) -> list[ConnKey]:
+        """
+        Remove and return all block entries whose expires_at <= now.
+        """
+        expired_keys = [
+            key for key, expires_at in self._blocked.items() if expires_at <= now
+        ]
+        for key in expired_keys:
+            del self._blocked[key]
+        return expired_keys
+
+    def __len__(self) -> int:
+        """Return the number of currently-tracked connections."""
+        return len(self._blocked)

@@ -766,3 +766,92 @@ class TestConcurrentConnections:
             "Old placeholder conn_key would have left the second ClientHello unresolved."
         )
         assert len(tracker) == 0
+
+
+class TestPostBlockContainment:
+    """
+    Phase 2.5 Step 4: after a Path B BLOCK, the connection is added to the
+    BlockedConnectionTracker. Any further packets on that 4-tuple are
+    dropped unconditionally without reaching the inspector or rule engine.
+    """
+
+    def test_subsequent_packets_dropped_on_blocked_connection(self):
+        from unittest.mock import patch, MagicMock
+        from sidecar.conntrack import BlockedConnectionTracker
+
+        parser, inspector, engine, network_rules = _make_components()
+        tracker = PendingConnectionTracker()
+        blocked_tracker = BlockedConnectionTracker()
+
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = lambda s: mock_sock
+        mock_sock.__exit__ = MagicMock(return_value=False)
+
+        import io
+        def _fake_open(*args, **kwargs):
+            return io.StringIO("test")
+
+        # Mock the inspectors to verify they aren't called
+        inspector.inspect = MagicMock()
+        engine.evaluate = MagicMock()
+
+        with patch("socket.socket", return_value=mock_sock), \
+             patch("builtins.open", side_effect=_fake_open), \
+             patch("sidecar.interceptor.build_rst_packet", return_value=b"rst"), \
+             patch("sidecar.interceptor.send_rst", side_effect=[True, False]): # test True then False
+
+            callback = build_callback(
+                parser, inspector, engine,
+                network_rules=network_rules,
+                tracker=tracker,
+                blocked_tracker=blocked_tracker
+            )
+
+            # Test 1: rst_success=True
+            syn_pkt1 = MockPacket(_make_tcp_syn_with_sport(sport=60001, dst_port=HOSTNAME_PORT))
+            ch_pkt1 = MockPacket(_make_tcp_with_sni_and_sport(BLOCKED_HOST, sport=60001, dst_port=HOSTNAME_PORT))
+            
+            callback(syn_pkt1)
+            callback(ch_pkt1)
+            
+            assert ch_pkt1.dropped
+            assert len(blocked_tracker) == 1
+
+            # Subsequent packet on the SAME 4-tuple (e.g. an HTTP request following the CH)
+            late_pkt1 = MockPacket(_make_tcp_with_sni_and_sport("some-data", sport=60001, dst_port=HOSTNAME_PORT))
+            inspector.inspect.reset_mock()
+            engine.evaluate.reset_mock()
+            
+            callback(late_pkt1)
+            
+            assert late_pkt1.dropped
+            inspector.inspect.assert_not_called()
+            engine.evaluate.assert_not_called()
+
+            # Test 2: rst_success=False (second call to send_rst returns False)
+            syn_pkt2 = MockPacket(_make_tcp_syn_with_sport(sport=60002, dst_port=HOSTNAME_PORT))
+            ch_pkt2 = MockPacket(_make_tcp_with_sni_and_sport(BLOCKED_HOST, sport=60002, dst_port=HOSTNAME_PORT))
+            
+            callback(syn_pkt2)
+            callback(ch_pkt2)
+            
+            assert ch_pkt2.dropped
+            assert len(blocked_tracker) == 2
+
+            late_pkt2 = MockPacket(_make_tcp_with_sni_and_sport("more-data", sport=60002, dst_port=HOSTNAME_PORT))
+            inspector.inspect.reset_mock()
+            engine.evaluate.reset_mock()
+            
+            callback(late_pkt2)
+            
+            assert late_pkt2.dropped
+            inspector.inspect.assert_not_called()
+            engine.evaluate.assert_not_called()
+
+            # Test 3: Unrelated 4-tuple is processed normally
+            unrelated_pkt = MockPacket(_make_tcp_with_sni_and_sport("data", sport=60003, dst_port=80)) # Port 80 stateless
+            callback(unrelated_pkt)
+            
+            # Since it's stateless, it should hit inspect() and evaluate()
+            inspector.inspect.assert_called_once()
+            engine.evaluate.assert_called_once()

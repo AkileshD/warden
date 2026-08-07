@@ -66,7 +66,12 @@ from daemon.inspectors.network_inspector import NetworkInspector
 from daemon.rules.engine import RuleEngine
 from daemon.inspectors.base import Decision, Verdict
 
-from sidecar.conntrack import PendingConnectionTracker, DEFAULT_TTL_SECONDS
+from sidecar.conntrack import (
+    PendingConnectionTracker,
+    DEFAULT_TTL_SECONDS,
+    BlockedConnectionTracker,
+    DEFAULT_BLOCKED_TTL_SECONDS,
+)
 from sidecar.rst_injector import build_rst_packet, send_rst
 
 POLICY_PATH = os.environ.get("WARDEN_POLICY_PATH", "daemon/rules/policy.yaml")
@@ -247,6 +252,7 @@ def build_callback(
     engine: RuleEngine,
     network_rules: Optional[List[Dict[str, Any]]] = None,
     tracker: Optional[PendingConnectionTracker] = None,
+    blocked_tracker: Optional[BlockedConnectionTracker] = None,
 ):
     """
     Factory to build the NFQUEUE packet callback with closed-over dependencies.
@@ -270,6 +276,7 @@ def build_callback(
     """
     _network_rules: List[Dict[str, Any]] = network_rules if network_rules is not None else []
     _tracker: PendingConnectionTracker = tracker if tracker is not None else PendingConnectionTracker()
+    _block_tracker: BlockedConnectionTracker = blocked_tracker if blocked_tracker is not None else BlockedConnectionTracker()
     _cached_token: Optional[str] = None
 
     def get_token() -> Optional[str]:
@@ -340,6 +347,7 @@ def build_callback(
         # RISK note). Running sweep before the decision avoids logging an expired
         # entry at the same time as processing a new packet for the same key.
         _sweep_and_log()
+        _block_tracker.sweep_expired(time.time())
 
         # ── 1. Parse ──────────────────────────────────────────────────────────
         raw_bytes = packet.get_payload()
@@ -355,6 +363,11 @@ def build_callback(
         # layers, so this key uniquely identifies a TCP flow even when two
         # connections share the same destination (different ephemeral src_port).
         conn_key = (parsed.src_ip, parsed.src_port, parsed.dst_ip, parsed.dst_port)
+
+        # ── POST-BLOCK CONTAINMENT ───────────────────────────────────────────
+        if _block_tracker.is_blocked(conn_key):
+            packet.drop()
+            return
 
         # ── PATH A — Provisional SYN acceptance ──────────────────────────────
         if _is_syn(parsed) and _has_hostname_rules(parsed.dst_port, _network_rules):
@@ -400,10 +413,17 @@ def build_callback(
                     # RISK: Only this ClientHello packet is dropped. The TCP
                     # handshake (SYN/SYN-ACK/ACK) has already completed because the
                     # SYN was provisionally accepted in Path A. Dropping only the
-                    # ClientHello does not terminate the TCP connection — the client
-                    # may observe a timeout or retry. Clean termination via TCP RST
-                    # is handled below.
+                    # ClientHello does not terminate the TCP connection. We inject
+                    # a TCP RST below to tear it down.
+                    # HOWEVER, RST delivery itself is unconfirmable by design (no
+                    # ACK-of-RST exists in TCP). Therefore, we also register this
+                    # connection in the post-BLOCK containment tracker to prevent
+                    # any further data flow on this connection regardless of RST
+                    # delivery success.
                     packet.drop()
+
+                    # Phase 2.5 Step 4: Post-BLOCK containment
+                    _block_tracker.block(conn_key, time.time() + DEFAULT_BLOCKED_TTL_SECONDS)
 
                     # Phase 2.5 Step 3: RST injection
                     rst_bytes = build_rst_packet(
