@@ -123,8 +123,8 @@ warden/
 |---|---|---|
 | `sidecar/conntrack.py` | done | `PendingConnectionTracker` — pure in-memory 4-tuple dict with TTL. Methods: `track`, `is_pending`, `resolve`, `sweep_expired`. Zero Docker/NFQUEUE/Scapy dependency. TTL=10s (SYN-to-ClientHello gap). Not wired into interceptor.py yet. |
 | `tests/test_conntrack.py` | done | 23 tests across 5 test classes: track/resolve round-trip, is_pending state, sweep_expired boundary conditions, `__len__`, and TTL constant bounds. All pass without any container running. |
-| Step 2 — wire into `sidecar/interceptor.py` | not_started | Modify `build_callback` to: (a) provisionally accept SYNs on hostname-rule ports, (b) call `resolve()` + SNI-inspect on ClientHellos, (c) call `sweep_expired()` on each packet, (d) retroactively RST if SNI fails. |
-| Step 3 — demo + integration test | not_started | End-to-end test: hostname-allowlisted HTTPS connection succeeds (SNI matches); non-allowlisted HTTPS connection is RST'd after ClientHello. |
+| Step 2 — wire into `sidecar/interceptor.py` | done | `build_callback` extended with Path A (bare SYN to hostname-ruled port: provisional accept + track, no log), Path B (ClientHello on tracked connection: resolve + evaluate via NetworkInspector + enforce), and per-packet sweep (expired entries logged as BLOCK with distinct `REASON_PROVISIONAL_BLOCK_TTL`). Three new module-level pure helpers: `_is_syn`, `_has_hostname_rules`, `_make_event_payload`. Stateless path for non-hostname-rule traffic completely unchanged. RISK tagged: Path B BLOCK drops only the ClientHello — TCP session not terminated (RST is Step 3). |
+| `tests/test_interceptor_conntrack.py` | done | 26 tests across 5 classes: `TestIsSyn`, `TestHasHostnameRules`, `TestPathA`, `TestPathB`, `TestSweep`, `TestStatelessPath`. No Docker/NFQUEUE required. All pass. |
 
 ### Phase 5 — Agent Integration Layer (Part 1) ✅ COMPLETE
 
@@ -291,10 +291,18 @@ Phase 2.5, Step 1 complete:
 - sidecar/conntrack.py written: PendingConnectionTracker with track,
   is_pending, resolve, sweep_expired. TTL=10s. Zero external deps.
 - tests/test_conntrack.py: 23/23 passing.
-- Total tests: 282 (was 259).
+- Total tests after Step 1: 282 (was 259).
 
-Next up: Phase 2.5 Step 2 — wire PendingConnectionTracker into
-sidecar/interceptor.py build_callback.
+Phase 2.5, Step 2 complete:
+- sidecar/interceptor.py updated: Path A (provisional SYN accept + track,
+  no log), Path B (ClientHello resolve + evaluate + enforce + log with
+  distinct reason strings), per-packet sweep (TTL-expiry BLOCK log).
+  Stateless path for non-hostname-rule traffic unchanged.
+  RISK tagged: Path B BLOCK drops ClientHello only — RST is Step 3.
+- tests/test_interceptor_conntrack.py: 26/26 passing.
+- Total tests after Step 2: 308 (was 282).
+
+Next up: Phase 2.5 Step 3 — RST injection on Path B BLOCK.
 ```
 
 ---
@@ -351,6 +359,7 @@ sidecar/interceptor.py build_callback.
 - **Handoff note refresh + gitignore conflict resolved (2026-08-07)** — Docs-only. Verification session confirmed HEAD is 4cf5c5e (five commits ahead of the stale 928e26b/3457451 note), 259/259 tests still passing. Overwrote §5 Handoff Note with current state. Documented that commit 872660e (fix(seed): hostname network events produced spurious IP-axis candidate) was a real code fix, not docs-only. Resolved the long-standing gitignore conflict: removed WARDEN_SPEC.md, WARDEN_BUILD_CONTEXT.md, and WARDEN_UNDERSTANDING_LOG.md from .gitignore — all three remain tracked in git (decision: working-memory files must stay tracked per §0's stated purpose). Moved the gitignore backlog item to Resolved.
 - **Phase 2.5 sequencing override (2026-08-07)** — Docs-only. Explicit human decision: Phase 2.5 (stateful SNI filtering) proceeds before Phase 4 (UI), overriding WARDEN_SPEC.md §7.3's stated default. §4 Roadmap updated; §6 conflict record added. Docker verified: both containers (jail + warden-sidecar) start and stop cleanly.
 - **Phase 2.5 Step 1 — PendingConnectionTracker (2026-08-07)** — `sidecar/conntrack.py` written: pure in-memory 4-tuple dict with 10s TTL. Methods: `track`, `is_pending`, `resolve`, `sweep_expired`. Zero Docker/NFQUEUE/Scapy dependency. `tests/test_conntrack.py`: 23 tests, 5 classes, all passing. Total tests: 282 (was 259). Not wired into `interceptor.py` yet — Step 2 is next.
+- **Phase 2.5 Step 2 — conntrack wired into interceptor (2026-08-07)** — `sidecar/interceptor.py` rewritten: Path A (bare SYN to hostname-ruled port → provisional accept + track, no log), Path B (ClientHello on tracked connection → resolve + evaluate via NetworkInspector + enforce + log), per-packet `sweep_expired` (TTL-expiry entries logged as BLOCK with reason `REASON_PROVISIONAL_BLOCK_TTL`). Three new module-level pure helpers: `_is_syn`, `_has_hostname_rules`, `_make_event_payload`. Stateless path for IP-only traffic unchanged. RISK tagged: Path B BLOCK drops ClientHello only, not the full TCP session — RST injection is Step 3. `tests/test_interceptor_conntrack.py`: 26 tests, 6 classes, all passing. Total tests: 308 (was 282).
 ---
 
 ## 8. Note on Future Files (do not build yet — context only)
