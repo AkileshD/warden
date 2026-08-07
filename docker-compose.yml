@@ -123,6 +123,17 @@ services:
       # This is the ONLY capability granted to the sidecar.
       # The jail has this capability: never.
       - NET_ADMIN
+      - NET_RAW     # Required to open raw sockets for TCP RST injection
+                    # (Phase 2.5 Step 3). Confirmed via live test inside
+                    # the running container that SOCK_RAW/AF_PACKET all
+                    # fail with EPERM without this capability — no
+                    # narrower alternative exists for crafting a spoofed
+                    # RST with correct seq/ack.
+                    # RISK: this capability allows crafting arbitrary raw
+                    # packets, not just RSTs, if the sidecar is ever
+                    # compromised. Usage is restricted in code to a single
+                    # isolated module (sidecar/rst_injector.py) — see that
+                    # file for the only place this capability is exercised.
 
     security_opt:
       - no-new-privileges:true
