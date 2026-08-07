@@ -97,6 +97,8 @@ class ParsedNetworkAction(ParsedAction):
     hostname_or_sni: Optional[str] = None
     raw_bytes: bytes = b""
     direction: str = "outbound"      # "outbound" | "inbound"
+    seq: int = 0
+    ack: int = 0
 
     def __repr__(self) -> str:
         host_part = f" ({self.hostname_or_sni})" if self.hostname_or_sni else ""
@@ -164,6 +166,8 @@ class PacketParser:
         if TCP in pkt:
             src_port: int = pkt[TCP].sport
             dst_port: int = pkt[TCP].dport
+            seq: int = pkt[TCP].seq
+            ack: int = pkt[TCP].ack
             protocol = "TCP"
             # Extract TLS SNI from the TCP payload if this looks like a
             # TLS ClientHello (port 443 or payload starts with TLS record).
@@ -178,18 +182,20 @@ class PacketParser:
             # Extract DNS query name from UDP port 53 traffic.
             hostname_or_sni = (
                 cls._extract_dns_query(udp_payload)
-                if dst_port == 53 and udp_payload
+                if udp_payload and dst_port == 53
                 else None
             )
-
+            seq = 0
+            ack = 0
         else:
             src_port = 0
             dst_port = 0
             protocol = "OTHER"
             hostname_or_sni = None
+            seq = 0
+            ack = 0
 
-        host_part = f" ({hostname_or_sni})" if hostname_or_sni else ""
-        raw_input = f"{protocol} {dst_ip}:{dst_port}{host_part}"
+        raw_input = f"{protocol} {dst_ip}:{dst_port}"
 
         return ParsedNetworkAction(
             binary="<network>",
@@ -202,6 +208,8 @@ class PacketParser:
             hostname_or_sni=hostname_or_sni,
             raw_bytes=raw_bytes,
             direction=direction,
+            seq=seq,
+            ack=ack,
         )
 
     # ── Direction inference ────────────────────────────────────────────────────

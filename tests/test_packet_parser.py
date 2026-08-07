@@ -43,10 +43,12 @@ def make_tcp_packet(
     dst_ip: str = "93.184.216.34",
     sport: int = 54321,
     dport: int = 80,
+    seq: int = 0,
+    ack: int = 0,
     payload: bytes = b"",
 ) -> bytes:
     """Build a raw TCP packet using Scapy."""
-    pkt = IP(src=src_ip, dst=dst_ip) / TCP(sport=sport, dport=dport)
+    pkt = IP(src=src_ip, dst=dst_ip) / TCP(sport=sport, dport=dport, seq=seq, ack=ack)
     if payload:
         pkt = pkt / Raw(load=payload)
     return bytes(pkt)
@@ -236,6 +238,16 @@ class TestPlainTCPPacket:
         raw = make_tcp_packet(dport=8080)
         result = PacketParser.parse(raw)
         assert result.dst_port == 8080
+
+    def test_seq_correct(self):
+        raw = make_tcp_packet(seq=12345678)
+        result = PacketParser.parse(raw)
+        assert result.seq == 12345678
+
+    def test_ack_correct(self):
+        raw = make_tcp_packet(ack=87654321)
+        result = PacketParser.parse(raw)
+        assert result.ack == 87654321
 
     def test_no_sni_for_plain_tcp(self):
         """Plain TCP with no payload → no SNI extracted."""
