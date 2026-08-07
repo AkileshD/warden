@@ -241,7 +241,7 @@ This is a living, prioritized menu of the open state across the project:
 Phase 2.5 closeout — 2026-08-07.
 
 Verified state:
-- HEAD: 722270a
+- HEAD: 2ebc062 (this commit is the docs-only closeout commit itself, finalizing Phase 2.5).
 - 336/336 tests passing, 0 failing (python3 -m pytest tests/ confirmed).
 - Phase 2.5 is fully complete across all 4 steps.
 
