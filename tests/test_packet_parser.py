@@ -266,6 +266,28 @@ class TestPlainTCPPacket:
         result = PacketParser.parse(raw)
         assert result.direction == "inbound"
 
+    def test_src_ip_populated(self):
+        """src_ip is populated from the IP layer source address."""
+        raw = make_tcp_packet(src_ip="192.168.1.10", dst_ip="93.184.216.34", dport=80)
+        result = PacketParser.parse(raw)
+        assert result.src_ip == "192.168.1.10"
+
+    def test_src_port_populated(self):
+        """src_port is populated from the TCP source port."""
+        raw = make_tcp_packet(sport=54321, dport=80)
+        result = PacketParser.parse(raw)
+        assert result.src_port == 54321
+
+    def test_src_and_dst_are_distinct(self):
+        """src_ip/src_port must not equal dst_ip/dst_port for a realistic packet."""
+        raw = make_tcp_packet(
+            src_ip="192.168.1.10", sport=54321,
+            dst_ip="93.184.216.34",  dport=443,
+        )
+        result = PacketParser.parse(raw)
+        assert result.src_ip != result.dst_ip
+        assert result.src_port != result.dst_port
+
 
 # ── Test: UDP DNS query ────────────────────────────────────────────────────────
 
@@ -334,6 +356,20 @@ class TestUDPDNSQuery:
             "we only care about what the agent is ASKING for, not what it received."
         )
 
+    def test_src_ip_populated_udp(self):
+        """src_ip is populated for UDP packets."""
+        payload = make_dns_query_payload("example.com")
+        raw = make_udp_packet(src_ip="172.17.0.2", dport=53, payload=payload)
+        result = PacketParser.parse(raw)
+        assert result.src_ip == "172.17.0.2"
+
+    def test_src_port_populated_udp(self):
+        """src_port is populated from the UDP source port."""
+        payload = make_dns_query_payload("example.com")
+        raw = make_udp_packet(sport=53422, dport=53, payload=payload)
+        result = PacketParser.parse(raw)
+        assert result.src_port == 53422
+
 
 # ── Test: TLS ClientHello with SNI ────────────────────────────────────────────
 
@@ -386,6 +422,20 @@ class TestTLSClientHelloSNI:
         result = PacketParser.parse(raw)
         assert result.hostname_or_sni is None
 
+    def test_src_ip_populated_tls(self):
+        """src_ip is populated for TLS ClientHello packets."""
+        tls_payload = make_tls_client_hello_payload("api.openai.com")
+        raw = make_tcp_packet(src_ip="192.168.1.10", dst_ip="104.18.7.192", dport=443, payload=tls_payload)
+        result = PacketParser.parse(raw)
+        assert result.src_ip == "192.168.1.10"
+
+    def test_src_port_populated_tls(self):
+        """src_port is populated for TLS ClientHello packets."""
+        tls_payload = make_tls_client_hello_payload("api.openai.com")
+        raw = make_tcp_packet(sport=55000, dport=443, payload=tls_payload)
+        result = PacketParser.parse(raw)
+        assert result.src_port == 55000
+
 
 # ── Test: Graceful fallback on garbage input ──────────────────────────────────
 
@@ -410,3 +460,13 @@ class TestGracefulFallback:
     def test_direction_defaults_to_outbound_on_fallback(self):
         result = PacketParser.parse(b"\x00" * 10)
         assert result.direction == "outbound"
+
+    def test_src_ip_is_unknown_on_fallback(self):
+        """Unparseable input falls back to src_ip='unknown'."""
+        result = PacketParser.parse(b"\xff" * 4)
+        assert result.src_ip == "unknown"
+
+    def test_src_port_is_zero_on_fallback(self):
+        """Unparseable input falls back to src_port=0."""
+        result = PacketParser.parse(b"\xff" * 4)
+        assert result.src_port == 0

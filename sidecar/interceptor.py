@@ -349,15 +349,11 @@ def build_callback(
             packet.drop()
             return
 
-        # WHY reconstruct conn_key from dst fields only: PacketParser does not
-        # currently expose src_ip/src_port on ParsedNetworkAction. The 4-tuple
-        # here uses dst_ip/dst_port twice as a placeholder.
-        # TODO(phase2.5): expose src_ip + src_port from PacketParser so the
-        # conn_key truly uniquely identifies the TCP flow. For now, the key is
-        # (dst_ip, dst_port, dst_ip, dst_port) — unique enough for the single-
-        # agent, single-connection-at-a-time Phase 2.5 use case, but will
-        # collide if two flows share the same dst. Fix before multi-agent use.
-        conn_key = (parsed.dst_ip, parsed.dst_port, parsed.dst_ip, parsed.dst_port)
+        # Real 4-tuple conn_key: (src_ip, src_port, dst_ip, dst_port).
+        # PacketParser now exposes src_ip and src_port from the IP/TCP/UDP
+        # layers, so this key uniquely identifies a TCP flow even when two
+        # connections share the same destination (different ephemeral src_port).
+        conn_key = (parsed.src_ip, parsed.src_port, parsed.dst_ip, parsed.dst_port)
 
         # ── PATH A — Provisional SYN acceptance ──────────────────────────────
         if _is_syn(parsed) and _has_hostname_rules(parsed.dst_port, _network_rules):

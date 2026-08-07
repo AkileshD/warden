@@ -613,3 +613,139 @@ class TestStatelessPath:
             callback(MockPacket(_make_tcp_ip_only()))
 
         assert len(tracker) == 0
+
+
+# ---------------------------------------------------------------------------
+# TestConcurrentConnections (requires real 4-tuple — old placeholder failed this)
+# ---------------------------------------------------------------------------
+
+def _make_tcp_syn_with_sport(sport: int, dst_ip: str = "93.184.216.34", dst_port: int = 443) -> bytes:
+    """Bare TCP SYN with a specific source port — for concurrent-connection tests."""
+    from scapy.all import IP, TCP
+    pkt = IP(src=JAIL_SRC_IP, dst=dst_ip) / TCP(sport=sport, dport=dst_port, flags="S")
+    return bytes(pkt)
+
+
+def _make_tcp_with_sni_and_sport(sni: str, sport: int, dst_ip: str = "93.184.216.34", dst_port: int = 443) -> bytes:
+    """TCP ClientHello with a specific source port — for concurrent-connection tests."""
+    from scapy.all import IP, TCP, Raw
+    payload = _make_tls_client_hello(sni)
+    pkt = IP(src=JAIL_SRC_IP, dst=dst_ip) / TCP(sport=sport, dport=dst_port) / Raw(load=payload)
+    return bytes(pkt)
+
+
+class TestConcurrentConnections:
+    """
+    Prove that two simultaneous connections to the same dst_ip:dst_port but
+    from different ephemeral src_ports are tracked and resolved independently.
+
+    WHY this test class: this is the exact collision case the old placeholder
+    conn_key (dst_ip, dst_port, dst_ip, dst_port) could NOT handle — both
+    connections would overwrite the same key. The real 4-tuple includes src_port
+    and correctly distinguishes them.
+    """
+
+    def _build_callback_with_tracker(self, tracker: PendingConnectionTracker, token: str = "test-token-concurrent"):
+        parser, inspector, engine, network_rules = _make_components()
+        import io
+        def _fake_open(path, *args, **kwargs):
+            if "token" in str(path):
+                return io.StringIO(token)
+            raise OSError(f"unexpected open: {path}")
+        return build_callback(parser, inspector, engine,
+                              network_rules=network_rules, tracker=tracker), _fake_open
+
+    def test_two_syns_create_two_tracker_entries(self):
+        """Two SYNs from different src_ports to the same dst each create a separate entry."""
+        tracker = PendingConnectionTracker()
+        callback, _fake_open = self._build_callback_with_tracker(tracker)
+
+        with patch("socket.socket"), patch("builtins.open", side_effect=_fake_open):
+            callback(MockPacket(_make_tcp_syn_with_sport(sport=60001, dst_port=HOSTNAME_PORT)))
+            callback(MockPacket(_make_tcp_syn_with_sport(sport=60002, dst_port=HOSTNAME_PORT)))
+
+        assert len(tracker) == 2, (
+            f"Expected 2 separate tracker entries for 2 different src_ports; got {len(tracker)}. "
+            "Old placeholder conn_key would have overwritten the first entry."
+        )
+
+    def test_two_syns_both_accepted(self):
+        """Both SYNs must be provisionally accepted."""
+        tracker = PendingConnectionTracker()
+        callback, _fake_open = self._build_callback_with_tracker(tracker)
+
+        with patch("socket.socket"), patch("builtins.open", side_effect=_fake_open):
+            syn_a = MockPacket(_make_tcp_syn_with_sport(sport=60001, dst_port=HOSTNAME_PORT))
+            syn_b = MockPacket(_make_tcp_syn_with_sport(sport=60002, dst_port=HOSTNAME_PORT))
+            callback(syn_a)
+            callback(syn_b)
+
+        assert syn_a.accepted and syn_b.accepted
+
+    def test_resolving_one_does_not_affect_the_other(self):
+        """
+        Resolving connection A's ClientHello leaves connection B still tracked.
+        The old placeholder would have caused both to share one key.
+        """
+        tracker = PendingConnectionTracker()
+        sent_payloads: List[bytes] = []
+
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = lambda s: mock_sock
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.sendto = lambda data, addr: sent_payloads.append(data)
+
+        callback, _fake_open = self._build_callback_with_tracker(tracker, "tok-resolve")
+
+        with patch("socket.socket", return_value=mock_sock), \
+             patch("builtins.open", side_effect=_fake_open):
+            callback(MockPacket(_make_tcp_syn_with_sport(sport=60001, dst_port=HOSTNAME_PORT)))
+            callback(MockPacket(_make_tcp_syn_with_sport(sport=60002, dst_port=HOSTNAME_PORT)))
+            assert len(tracker) == 2
+
+            callback(MockPacket(_make_tcp_with_sni_and_sport(
+                ALLOWED_HOST, sport=60001, dst_port=HOSTNAME_PORT,
+            )))
+
+        assert len(tracker) == 1, (
+            f"After resolving connection A, tracker should have 1 entry (B). Got {len(tracker)}."
+        )
+
+    def test_each_connection_resolved_independently(self):
+        """
+        Resolve A then B in sequence — each produces its own ALLOW event.
+        If they shared a conn_key the second ClientHello would find nothing to resolve.
+        """
+        import json
+
+        tracker = PendingConnectionTracker()
+        sent_payloads: List[bytes] = []
+
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = lambda s: mock_sock
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.sendto = lambda data, addr: sent_payloads.append(data)
+
+        callback, _fake_open = self._build_callback_with_tracker(tracker, "tok-seq")
+
+        with patch("socket.socket", return_value=mock_sock), \
+             patch("builtins.open", side_effect=_fake_open):
+            callback(MockPacket(_make_tcp_syn_with_sport(sport=60001, dst_port=HOSTNAME_PORT)))
+            callback(MockPacket(_make_tcp_syn_with_sport(sport=60002, dst_port=HOSTNAME_PORT)))
+
+            callback(MockPacket(_make_tcp_with_sni_and_sport(
+                ALLOWED_HOST, sport=60001, dst_port=HOSTNAME_PORT,
+            )))
+            callback(MockPacket(_make_tcp_with_sni_and_sport(
+                ALLOWED_HOST, sport=60002, dst_port=HOSTNAME_PORT,
+            )))
+
+        allow_events = [
+            json.loads(p) for p in sent_payloads
+            if json.loads(p)["verdict"]["reason"] == REASON_PROVISIONAL_ALLOW_SNI
+        ]
+        assert len(allow_events) == 2, (
+            f"Expected 2 independent ALLOW events; got {len(allow_events)}. "
+            "Old placeholder conn_key would have left the second ClientHello unresolved."
+        )
+        assert len(tracker) == 0

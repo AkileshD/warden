@@ -65,6 +65,8 @@ class ParsedNetworkAction(ParsedAction):
     network-specific fields when needed.
 
     Fields (network-specific, in addition to ParsedAction's fields):
+      src_ip          — source IP address as a dotted-decimal string
+      src_port        — source TCP/UDP port (0 for non-TCP/UDP packets)
       dst_ip          — destination IP address as a dotted-decimal string
       dst_port        — destination TCP/UDP port (0 for non-TCP/UDP packets)
       protocol        — "TCP", "UDP", or "OTHER"
@@ -87,6 +89,8 @@ class ParsedNetworkAction(ParsedAction):
     # defaults come AFTER fields without defaults. ParsedAction's fields all
     # have defaults (via field(default_factory=...)), so we can safely add
     # new fields with defaults here.
+    src_ip: str = ""             # WHY: needed for true 4-tuple conn_key in conntrack
+    src_port: int = 0            # WHY: needed for true 4-tuple conn_key in conntrack
     dst_ip: str = ""
     dst_port: int = 0
     protocol: str = "OTHER"          # "TCP" | "UDP" | "OTHER"
@@ -97,7 +101,8 @@ class ParsedNetworkAction(ParsedAction):
     def __repr__(self) -> str:
         host_part = f" ({self.hostname_or_sni})" if self.hostname_or_sni else ""
         return (
-            f"ParsedNetworkAction({self.protocol} → {self.dst_ip}:{self.dst_port}"
+            f"ParsedNetworkAction({self.protocol} {self.src_ip}:{self.src_port}"
+            f" → {self.dst_ip}:{self.dst_port}"
             f"{host_part}, direction={self.direction!r})"
         )
 
@@ -137,6 +142,8 @@ class PacketParser:
             return ParsedNetworkAction(
                 binary="<network>",
                 raw_input="<unparseable packet>",
+                src_ip="unknown",
+                src_port=0,
                 dst_ip="unknown",
                 dst_port=0,
                 protocol="OTHER",
@@ -155,6 +162,7 @@ class PacketParser:
         direction = cls._infer_direction(src_ip)
 
         if TCP in pkt:
+            src_port: int = pkt[TCP].sport
             dst_port: int = pkt[TCP].dport
             protocol = "TCP"
             # Extract TLS SNI from the TCP payload if this looks like a
@@ -163,6 +171,7 @@ class PacketParser:
             hostname_or_sni = cls._extract_sni(tcp_payload) if tcp_payload else None
 
         elif UDP in pkt:
+            src_port = pkt[UDP].sport
             dst_port = pkt[UDP].dport
             protocol = "UDP"
             udp_payload: bytes = bytes(pkt[UDP].payload)
@@ -174,6 +183,7 @@ class PacketParser:
             )
 
         else:
+            src_port = 0
             dst_port = 0
             protocol = "OTHER"
             hostname_or_sni = None
@@ -184,6 +194,8 @@ class PacketParser:
         return ParsedNetworkAction(
             binary="<network>",
             raw_input=raw_input,
+            src_ip=src_ip,
+            src_port=src_port,
             dst_ip=dst_ip,
             dst_port=dst_port,
             protocol=protocol,
