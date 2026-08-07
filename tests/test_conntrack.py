@@ -258,3 +258,45 @@ class TestDefaultTTL:
     def test_default_ttl_is_at_most_60_seconds(self):
         """TTL must stay short — this is not a long-lived session store."""
         assert DEFAULT_TTL_SECONDS <= 60.0
+
+
+# ---------------------------------------------------------------------------
+# TestBlockedConnectionTracker
+# ---------------------------------------------------------------------------
+
+from sidecar.conntrack import BlockedConnectionTracker
+
+class TestBlockedConnectionTracker:
+    """Basic block/is_blocked/sweep_expired behaviour for BlockedConnectionTracker."""
+
+    def test_block_then_is_blocked_returns_true(self):
+        tracker = BlockedConnectionTracker()
+        key = make_key()
+        tracker.block(key, expires_at=T0 + 60.0)
+        
+        assert tracker.is_blocked(key)
+        assert len(tracker) == 1
+
+    def test_is_blocked_on_unblocked_key_returns_false(self):
+        tracker = BlockedConnectionTracker()
+        assert not tracker.is_blocked(make_key())
+
+    def test_sweep_removes_expired_but_leaves_unexpired(self):
+        tracker = BlockedConnectionTracker()
+        key1 = make_key(src_port=1000)
+        key2 = make_key(src_port=2000)
+        key3 = make_key(src_port=3000)
+        
+        tracker.block(key1, expires_at=T0 + 10.0)
+        tracker.block(key2, expires_at=T0 + 20.0)
+        tracker.block(key3, expires_at=T0 + 30.0)
+        
+        # Test exact boundary: 20.0 should be removed
+        expired = tracker.sweep_expired(now=T0 + 20.0)
+        
+        assert len(expired) == 2
+        assert set(expired) == {key1, key2}
+        assert not tracker.is_blocked(key1)
+        assert not tracker.is_blocked(key2)
+        assert tracker.is_blocked(key3)
+        assert len(tracker) == 1

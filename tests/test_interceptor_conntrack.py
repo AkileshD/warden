@@ -775,7 +775,7 @@ class TestPostBlockContainment:
     dropped unconditionally without reaching the inspector or rule engine.
     """
 
-    def test_subsequent_packets_dropped_on_blocked_connection(self):
+    def _setup_containment_test(self, rst_success: bool):
         from unittest.mock import patch, MagicMock
         from sidecar.conntrack import BlockedConnectionTracker
 
@@ -791,67 +791,85 @@ class TestPostBlockContainment:
         def _fake_open(*args, **kwargs):
             return io.StringIO("test")
 
-        # Mock the inspectors to verify they aren't called
         inspector.inspect = MagicMock()
         engine.evaluate = MagicMock()
 
-        with patch("socket.socket", return_value=mock_sock), \
-             patch("builtins.open", side_effect=_fake_open), \
-             patch("sidecar.interceptor.build_rst_packet", return_value=b"rst"), \
-             patch("sidecar.interceptor.send_rst", side_effect=[True, False]): # test True then False
+        patchers = [
+            patch("socket.socket", return_value=mock_sock),
+            patch("builtins.open", side_effect=_fake_open),
+            patch("sidecar.interceptor.build_rst_packet", return_value=b"rst"),
+            patch("sidecar.interceptor.send_rst", return_value=rst_success),
+        ]
+        for p in patchers:
+            p.start()
 
-            callback = build_callback(
-                parser, inspector, engine,
-                network_rules=network_rules,
-                tracker=tracker,
-                blocked_tracker=blocked_tracker
-            )
+        callback = build_callback(
+            parser, inspector, engine,
+            network_rules=network_rules,
+            tracker=tracker,
+            blocked_tracker=blocked_tracker
+        )
+        return callback, inspector, engine, blocked_tracker, patchers
 
-            # Test 1: rst_success=True
-            syn_pkt1 = MockPacket(_make_tcp_syn_with_sport(sport=60001, dst_port=HOSTNAME_PORT))
-            ch_pkt1 = MockPacket(_make_tcp_with_sni_and_sport(BLOCKED_HOST, sport=60001, dst_port=HOSTNAME_PORT))
+    def _teardown_containment_test(self, patchers):
+        for p in patchers:
+            p.stop()
+
+    def test_containment_after_rst_success(self):
+        callback, inspector, engine, blocked_tracker, patchers = self._setup_containment_test(rst_success=True)
+        try:
+            syn_pkt = MockPacket(_make_tcp_syn_with_sport(sport=60001, dst_port=HOSTNAME_PORT))
+            ch_pkt = MockPacket(_make_tcp_with_sni_and_sport(BLOCKED_HOST, sport=60001, dst_port=HOSTNAME_PORT))
             
-            callback(syn_pkt1)
-            callback(ch_pkt1)
+            callback(syn_pkt)
+            callback(ch_pkt)
             
-            assert ch_pkt1.dropped
+            assert ch_pkt.dropped
             assert len(blocked_tracker) == 1
 
-            # Subsequent packet on the SAME 4-tuple (e.g. an HTTP request following the CH)
-            late_pkt1 = MockPacket(_make_tcp_with_sni_and_sport("some-data", sport=60001, dst_port=HOSTNAME_PORT))
+            late_pkt = MockPacket(_make_tcp_with_sni_and_sport("some-data", sport=60001, dst_port=HOSTNAME_PORT))
             inspector.inspect.reset_mock()
             engine.evaluate.reset_mock()
             
-            callback(late_pkt1)
+            callback(late_pkt)
             
-            assert late_pkt1.dropped
+            assert late_pkt.dropped
             inspector.inspect.assert_not_called()
             engine.evaluate.assert_not_called()
+        finally:
+            self._teardown_containment_test(patchers)
 
-            # Test 2: rst_success=False (second call to send_rst returns False)
-            syn_pkt2 = MockPacket(_make_tcp_syn_with_sport(sport=60002, dst_port=HOSTNAME_PORT))
-            ch_pkt2 = MockPacket(_make_tcp_with_sni_and_sport(BLOCKED_HOST, sport=60002, dst_port=HOSTNAME_PORT))
+    def test_containment_after_rst_failure(self):
+        callback, inspector, engine, blocked_tracker, patchers = self._setup_containment_test(rst_success=False)
+        try:
+            syn_pkt = MockPacket(_make_tcp_syn_with_sport(sport=60002, dst_port=HOSTNAME_PORT))
+            ch_pkt = MockPacket(_make_tcp_with_sni_and_sport(BLOCKED_HOST, sport=60002, dst_port=HOSTNAME_PORT))
             
-            callback(syn_pkt2)
-            callback(ch_pkt2)
+            callback(syn_pkt)
+            callback(ch_pkt)
             
-            assert ch_pkt2.dropped
-            assert len(blocked_tracker) == 2
+            assert ch_pkt.dropped
+            assert len(blocked_tracker) == 1
 
-            late_pkt2 = MockPacket(_make_tcp_with_sni_and_sport("more-data", sport=60002, dst_port=HOSTNAME_PORT))
+            late_pkt = MockPacket(_make_tcp_with_sni_and_sport("more-data", sport=60002, dst_port=HOSTNAME_PORT))
             inspector.inspect.reset_mock()
             engine.evaluate.reset_mock()
             
-            callback(late_pkt2)
+            callback(late_pkt)
             
-            assert late_pkt2.dropped
+            assert late_pkt.dropped
             inspector.inspect.assert_not_called()
             engine.evaluate.assert_not_called()
+        finally:
+            self._teardown_containment_test(patchers)
 
-            # Test 3: Unrelated 4-tuple is processed normally
-            unrelated_pkt = MockPacket(_make_tcp_with_sni_and_sport("data", sport=60003, dst_port=80)) # Port 80 stateless
+    def test_unrelated_connection_unaffected(self):
+        callback, inspector, engine, _, patchers = self._setup_containment_test(rst_success=True)
+        try:
+            unrelated_pkt = MockPacket(_make_tcp_with_sni_and_sport("data", sport=60003, dst_port=80))
             callback(unrelated_pkt)
             
-            # Since it's stateless, it should hit inspect() and evaluate()
             inspector.inspect.assert_called_once()
             engine.evaluate.assert_called_once()
+        finally:
+            self._teardown_containment_test(patchers)
