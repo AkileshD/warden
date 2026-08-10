@@ -129,11 +129,11 @@ warden/
 
 ### Phase 4 — Minimalist UI ✅ COMPLETE
 
-*Note: Built strictly against design/phase4/spec.md as a read-only Textual TUI. Resolves structural dependencies via relative pathing to ensure portability across working directories.*
+*Note: Built strictly against design/phase4/spec.md as a read-only Textual TUI. Resolves structural dependencies via relative pathing to ensure portability across working directories. Tested live against real multi-phase groq-backed data.*
 
 | Component | Status | Notes |
 |---|---|---|
-| `clients/tui/app.py` | done | Textual TUI with `Events` and `Proposals` tabs. Employs `sqlite3.connect(..., uri=True, ?mode=ro)` for structural read-only guarantee. Polls for live updates every 2s. Graceful JSON parsing for all event schemas. |
+| `clients/tui/app.py` | done | Textual TUI with `Events` and `Proposals` tabs. Employs `sqlite3.connect(..., uri=True, ?mode=ro)` for structural read-only guarantee. Polls for live updates every 2s. Graceful JSON parsing for all event schemas. Live manual test confirmed Events tab populates correctly with multi-axis data and Proposals tab renders pending rules cleanly. |
 | `tests/test_phase4_tui.py` | done | 5 async UI tests covering read-only enforcement, Docker/socket state mocked tests, JSON parser unit testing, and component rendering logic. |
 | `pyproject.toml` | done | Added `textual` and `rich` as base dependencies; `pytest-asyncio` as a dev dependency. |
 
@@ -249,9 +249,19 @@ This is a living, prioritized menu of the open state across the project:
 Phase 4 closeout — 2026-08-10.
 
 Verified state:
-- HEAD: 5aaad9f
+- HEAD: 0af77dd2fad3d922ef8591a1377c4baf14abc448
 - 346/346 tests passing, 0 failing (python3 -m pytest tests/ confirmed).
 - Phase 4 (Textual TUI) is fully complete.
+
+Testing details: Phase 4 was validated via live manual testing against a real Groq-backed agent run (not just unit tests) — both Events and Proposals tabs confirmed rendering real data, including a seeded end-to-end proposal-generation pass via demo/seed_phase3_data.py + demo/run_phase3_advisor.py.
+
+Bugs found/fixed today:
+1. SummaryRow counts were derived from a LIMIT 100 windowed query instead of a true aggregate, causing counts to silently drop as the ledger grew past 100 rows — fixed with a dedicated GROUP BY verdict query.
+2. The Events tab rendered zero visible rows due to `height: 100%` collapsing to 0 inside a TabPane's Horizontal container — fixed by switching to `height: 1fr` throughout that CSS chain. RISK: any future TabPane content added to this TUI should default to `1fr`, not `100%`, or it will silently render with zero height again.
+
+Incidents: The daemon port-conflict incident (UDP 5005 Address already in use) was caused by an agent's own uncleaned backgrounded process during debugging, not an app bug. It should not be treated as a code issue.
+
+Design Note: The Phase 3 advisor (detection_scanner) is manually invoked, not polled by the daemon — meaning the TUI's Proposals tab will never auto-populate on its own. This is a known asymmetry (Events tab is live/real-time via polling; Proposals tab requires a separate manual advisor run) worth surfacing if this ever becomes user-facing beyond local dev use.
 
 Phase 5 Part 2 (SDK/Dashboard) is the next logical step remaining in the roadmap.
 ```
@@ -276,6 +286,7 @@ Phase 5 Part 2 (SDK/Dashboard) is the next logical step remaining in the roadmap
 ---
 
 ## 7. Changelog
+- **2026-08-10** — Phase 4 completion + Bug Fixes. Live verification against Groq-backed agent run confirmed UI components function against real data. Fixed two live bugs: (1) SummaryRow totals were constrained by a LIMIT 100 clause instead of querying true aggregates, silently dropping counts; (2) TabPane rendering collapsed to zero height for `events-container` because of a CSS `height: 100%` misconfiguration, fixed by changing flex heights to `1fr` globally across the TUI.
 - **2026-08-10** — Phase 4 TUI completed. Added `clients/tui/app.py` with read-only SQLite UI using Textual. Added `pytest-asyncio` and `test_phase4_tui.py`. Decisions: `sqlite3.connect` with `?mode=ro` strictly enforces read-only; DB path dynamically resolves to repo root; permissive badge mapping derives structurally from `permissive_change` column (`1`=ALLOW, `0`=BLOCK); UI polling handles malformed JSON blobs gracefully.
 - **2026-08-02** — Manual testing pass: Verified `warden exec` CLI offline behavior and live daemon scenarios (shell parsing defaults, network drops vs HTTP errors).
 - **2026-08-02** — Phase 5 Part 1 completed: Built `ControlSocket` and `warden` CLI wrapper to act as the single control plane. Added `threading.Lock` to executor override for concurrency safety. Standardized ledger DB naming to `warden_demo.db`. Confirmed `core.py` changes are purely lifecycle hooks. Successfully ran live `demo/run_agent_test.py` as a pure client via the socket.
