@@ -97,7 +97,7 @@ warden/
 
 > Update this every session. Mark each item `not_started` / `in_progress` / `done` (done = has passing tests, not just exists).
 
-**Active phase:** Phase 1 complete; Phase 2 complete; Phase 3 complete. Validation Milestone complete. Phase 2.5 complete. **Phase 4 (Minimalist UI) — NEXT** (sequencing override resolved, resuming default sequence).
+**Active phase:** Phase 1 complete; Phase 2 complete; Phase 3 complete. Validation Milestone complete. Phase 2.5 complete. Phase 4 complete. **Phase 5 Part 2 (SDK/Dashboard) — NEXT**.
 
 ### Phase 3 — The Smart Policy Loop ✅ COMPLETE
 
@@ -126,6 +126,16 @@ warden/
 | `daemon/parser/packet_parser.py` | done | Prerequisite work (Step 3): extracted `src_ip`/`src_port`/`seq`/`ack` from IP/TCP layers. (Shared tests) |
 | `sidecar/rst_injector.py` | done | Step 3: `build_rst_packet` (pure construction with Scapy) + `send_rst` (isolated raw-socket send via `AF_INET`/`SOCK_RAW`). Only place in the codebase that opens a raw socket. (3 unit tests) |
 | `docker-compose.yml` | done | `NET_RAW` capability granted, scoped *only* to `warden-sidecar` (jail untouched) to enable RST injection. |
+
+### Phase 4 — Minimalist UI ✅ COMPLETE
+
+*Note: Built strictly against design/phase4/spec.md as a read-only Textual TUI. Resolves structural dependencies via relative pathing to ensure portability across working directories.*
+
+| Component | Status | Notes |
+|---|---|---|
+| `clients/tui/app.py` | done | Textual TUI with `Events` and `Proposals` tabs. Employs `sqlite3.connect(..., uri=True, ?mode=ro)` for structural read-only guarantee. Polls for live updates every 2s. Graceful JSON parsing for all event schemas. |
+| `tests/test_phase4_tui.py` | done | 5 async UI tests covering read-only enforcement, Docker/socket state mocked tests, JSON parser unit testing, and component rendering logic. |
+| `pyproject.toml` | done | Added `textual` and `rich` as base dependencies; `pytest-asyncio` as a dev dependency. |
 
 ### Phase 5 — Agent Integration Layer (Part 1) ✅ COMPLETE
 
@@ -187,8 +197,7 @@ Near/mid-term:
 - **Phase 2.5 — Stateful SNI filtering (hostname-based network ALLOW rules) — IN PROGRESS**
   NOTE: WARDEN_SPEC.md §7.3 originally stated Phase 2.5 is "scheduled AFTER Phases 1-4 are complete." This sequencing has been explicitly overridden by the human (2026-08-07): Phase 2.5 proceeds before Phase 4. See §6 for the conflict record.
   - TODO(phase2.5): demo/seed_phase3_data.py's _make_network_blob() now sets dst_ip=None for hostname-typed network events (fixed in commit 872660e — previously a hardcoded placeholder IP caused a spurious IP-axis detection candidate). This correctly isolates the hostname axis for Phase 3's detection scanner, but it means the seeder no longer models a realistic packet shape: per WARDEN_SPEC.md §7.2, a real TLS ClientHello always carries both an IP and an SNI hostname together — they don't come as one-or-the-other. If Phase 2.5's conntrack/SNI work needs synthetic seed data that exercises both fields co-occurring on the same event (e.g. to test retroactive-enforcement logic against a resolved IP+hostname pair), this seeder should not be reused as-is without revisiting that design. Not a blocker for Phase 3, which only needed axis isolation — flagging before Phase 2.5 starts so it isn't rediscovered the hard way.
-- Phase 5 Part 2 — Python SDK, Dashboard client (deferred, confirmed still required). NOTE: Approval CLI was delivered early as a Phase 3 component (`daemon/advisor/approval_cli.py`); it is no longer outstanding under Phase 5 Part 2.
-- Phase 4 — Minimalist UI/dashboard (next after Phase 2.5; needs design/ mockup gate first)
+- Phase 5 Part 2 — Python SDK, Dashboard client (deferred, confirmed still required). NOTE: Approval CLI was delivered early as a Phase 3 component (`daemon/advisor/approval_cli.py`); Phase 4 (Minimalist UI) is now also complete. Only Python SDK/Dashboard remains under Phase 5 Part 2.
   - NOTE(phase4): Live agent validation run (2026-08-06, Phases 1+2) surfaced a real UX finding worth remembering when Phase 4's UI is designed. A bare `ls` run outside ./project/** (i.e. from the daemon's root work_dir) does not match the project-scope allow rule in policy.yaml, and falls through to default_action: flag — which Phase 1's core loop currently treats as block-and-log. This is correct behavior per the policy as written (the catch-all allow rule is genuinely scoped to ./project/**, not the whole filesystem), not a bug. But it means one of the most harmless, common shell commands an agent can run gets silently faked rather than executed for real whenever the agent is working outside the project directory. This will likely be a very common FLAG in real usage and should be visible/obvious in the Phase 4 UI (e.g. distinguishable from genuinely suspicious FLAGs) rather than looking alarming by default. Not a Phase 1 fix — just a UX consideration to carry forward. Full validation run details: 7/7 expected outcomes confirmed live against a real Groq-backed agent across Phases 1, 2, and (implicitly, via the control socket) 5.
 - Phase 6 — Packaging/distribution
 
@@ -211,8 +220,7 @@ This is a living, prioritized menu of the open state across the project:
 
 - **Phase 2.5 (Stateful SNI filtering):** Still open, known limitation, confirmed multiple times.
 - **Phase 3 Integration:** Core built, still needs the synthetic-data end-to-end demo.
-- **Phase 5 Part 2 (SDK, dashboard):** Explicitly deferred. Must not be dropped from tracking. NOTE: Approval CLI is resolved — it was delivered as part of Phase 3, not Phase 5. See `daemon/advisor/approval_cli.py`.
-- **Phase 4 (UI):** Not started. Requires the design/mockup gate first. Lowest urgency of the open items.
+- **Phase 5 Part 2 (SDK, dashboard):** Explicitly deferred. Must not be dropped from tracking. NOTE: Approval CLI is resolved — it was delivered as part of Phase 3, not Phase 5. Phase 4 (UI) is also resolved.
 - **Open Minor Items:**
   - Stale `demo/run_phase2_demo.py`.
   - The `find`/`cat` argument-ordering bug (noticed earlier, still undiagnosed).
@@ -238,18 +246,14 @@ This is a living, prioritized menu of the open state across the project:
 ## 5. Handoff Note (overwrite this every session — do not append, replace)
 
 ```
-Phase 2.5 closeout — 2026-08-07.
+Phase 4 closeout — 2026-08-10.
 
 Verified state:
-- HEAD: 2ebc062 (this commit is the docs-only closeout commit itself, finalizing Phase 2.5).
-- 336/336 tests passing, 0 failing (python3 -m pytest tests/ confirmed).
-- Phase 2.5 is fully complete across all 4 steps.
+- HEAD: 5aaad9f
+- 346/346 tests passing, 0 failing (python3 -m pytest tests/ confirmed).
+- Phase 4 (Textual TUI) is fully complete.
 
-Phase 4 is next and is gated behind the design-spec -> human-mockup -> code sequence per WARDEN_SPEC.md's Phase 4 section. **NO Phase 4 code should be written until that gate is satisfied.**
-
-Two known limitations (unfixable by design, not open bugs):
-1. RST delivery cannot be confirmed by TCP itself — this is inherent to spoofed RST injection, not a gap. Containment via BlockedConnectionTracker is the mitigation, not a fix. Do not mistake this for a bug to be fixed in a future session.
-2. NET_RAW is now granted to the sidecar. This was explicitly scoped to sidecar/rst_injector.py. Do not casually extend raw-socket usage outside rst_injector.py without recognizing the deliberate isolation choice made here.
+Phase 5 Part 2 (SDK/Dashboard) is the next logical step remaining in the roadmap.
 ```
 
 ---
@@ -272,6 +276,7 @@ Two known limitations (unfixable by design, not open bugs):
 ---
 
 ## 7. Changelog
+- **2026-08-10** — Phase 4 TUI completed. Added `clients/tui/app.py` with read-only SQLite UI using Textual. Added `pytest-asyncio` and `test_phase4_tui.py`. Decisions: `sqlite3.connect` with `?mode=ro` strictly enforces read-only; DB path dynamically resolves to repo root; permissive badge mapping derives structurally from `permissive_change` column (`1`=ALLOW, `0`=BLOCK); UI polling handles malformed JSON blobs gracefully.
 - **2026-08-02** — Manual testing pass: Verified `warden exec` CLI offline behavior and live daemon scenarios (shell parsing defaults, network drops vs HTTP errors).
 - **2026-08-02** — Phase 5 Part 1 completed: Built `ControlSocket` and `warden` CLI wrapper to act as the single control plane. Added `threading.Lock` to executor override for concurrency safety. Standardized ledger DB naming to `warden_demo.db`. Confirmed `core.py` changes are purely lifecycle hooks. Successfully ran live `demo/run_agent_test.py` as a pure client via the socket.
 

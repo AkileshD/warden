@@ -320,3 +320,7 @@ Rather than running a real agent for many hours to produce enough flagged networ
 **Technical:**
 `seed_phase3_data.py` inserts rows via `logger._conn.execute()` under `logger._lock`, using the same SQL column set that `Logger._write()` uses in production. This ensures all schema constraints (`CHECK`, NOT NULL, indexes) are exercised. Two classes of negative controls are seeded: (1) volume-shy: fewer than N events for a pair, so the HAVING COUNT(*) >= :n_threshold clause never fires; (2) window-expired: events timestamped beyond the rolling window cutoff (`time.time() - window_hours * 3600`), so the WHERE CAST(strftime('%s', timestamp) AS REAL) >= :cutoff clause filters them out. The test suite verifies each class independently with targeted assertions on `scan()` output.
 
+
+### Phase 4 — TUI dashboard: Textual reactive UI pattern
+**What it is:** Textual is a Rapid Application Development framework for Python used to build Terminal User Interfaces (TUIs). It uses a declarative DOM (Document Object Model) and CSS-like styling, much like building a modern web app.
+**Why it matters:** Textual's `reactive` properties allow the UI to automatically re-render when underlying state variables (like counters or status strings) change. By combining `set_interval` polling on the SQLite ledger with reactive attributes, Warden's Phase 4 dashboard achieves live updates without complex threading or manual render loop management.
