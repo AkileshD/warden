@@ -9,6 +9,8 @@ description = "A fake shell that intercepts, evaluates, and deceives AI agent co
 requires-python = ">=3.11"
 dependencies = [
     "PyYAML>=6.0",
+    "textual",
+    "rich",
 ]
 
 [project.optional-dependencies]
@@ -16,6 +18,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov",
     "openai>=1.0.0",
+    "pytest-asyncio",
 ]
 
 [tool.setuptools.packages.find]
