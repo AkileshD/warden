@@ -70,52 +70,7 @@ class Header(Static):
         return f"[bold]WARDEN[/bold] | {self.status_text}"
 
 
-class InterceptCard(Static):
-    """A card displaying an intercepted (blocked/flagged) event."""
-    
-    def __init__(self, timestamp: str, action: str, reason: str, verdict: str, **kwargs):
-        super().__init__(**kwargs)
-        self.timestamp = timestamp
-        self.action = action
-        self.reason = reason
-        self.verdict = verdict
-        
-        if self.verdict == "BLOCK":
-            self.border_class = "border-blocked"
-        elif self.verdict == "FLAG":
-            self.border_class = "border-flagged"
-        else:
-            self.border_class = "border-default"
-            
-        self.classes = f"intercept-card {self.border_class}"
-
-    def render(self) -> str:
-        return (
-            f"[bold]{self.timestamp}[/bold]\n"
-            f"{self.action}\n"
-            f"[#777777]{self.reason}[/]"
-        )
-
-
-class ProposalCard(Static):
-    """A card displaying a pending proposal."""
-    
-    def __init__(self, detection_axis: str, binary: str, destination: str, action: str, reasoning: str, **kwargs):
-        super().__init__(**kwargs)
-        self.detection_axis = detection_axis
-        self.binary = binary
-        self.destination = destination
-        self.action = action
-        self.reasoning = reasoning
-        self.classes = "proposal-card"
-
-    def render(self) -> str:
-        color = "#639922" if self.action == "ALLOW" else "#E24B4A"
-        return (
-            f"[bold]Pattern:[/] {self.binary} \u2192 {self.destination} (Axis: {self.detection_axis})\n"
-            f"[bold]Proposed Action:[/] [{color}]{self.action}[/]\n"
-            f"[#777777]{self.reasoning}[/]"
-        )
+# Removed InterceptCard and ProposalCard as they are now formatted directly as Rich text strings to avoid DOM manipulation bugs.
 
 
 class WardenTUI(App):
@@ -139,43 +94,25 @@ class WardenTUI(App):
     }
     
     #events-container {
-        height: 100%;
+        height: 1fr;
     }
     
     #allowed-column {
         width: 50%;
         border-right: solid #2a2e2a;
         padding: 1;
+        height: 1fr;
     }
     
     #intercepted-column {
         width: 50%;
         padding: 1;
+        height: 1fr;
     }
     
-    .intercept-card {
+    #proposals-column {
         padding: 1;
-        margin-bottom: 1;
-        background: #1a1d1a;
-    }
-    
-    .border-blocked {
-        border-left: solid #E24B4A;
-    }
-    
-    .border-flagged {
-        border-left: solid #BA7517;
-    }
-    
-    .border-default {
-        border-left: solid #2a2e2a;
-    }
-    
-    .proposal-card {
-        padding: 1;
-        margin: 1;
-        background: #1a1d1a;
-        border-left: solid #2a2e2a;
+        height: 1fr;
     }
     
     .empty-state {
@@ -184,8 +121,8 @@ class WardenTUI(App):
         margin-top: 2;
     }
     
-    TabbedContent {
-        height: 100%;
+    TabbedContent, TabPane {
+        height: 1fr;
     }
     """
 
@@ -196,15 +133,15 @@ class WardenTUI(App):
             with TabPane("Events"):
                 with Horizontal(id="events-container"):
                     with VerticalScroll(id="allowed-column"):
-                        yield Static("No events recorded yet.", classes="empty-state", id="allowed-empty")
+                        yield Static("No events recorded yet.", classes="empty-state", id="allowed-content")
                     with VerticalScroll(id="intercepted-column"):
-                        yield Static("No events recorded yet.", classes="empty-state", id="intercepted-empty")
+                        yield Static("No events recorded yet.", classes="empty-state", id="intercepted-content")
             with TabPane("Proposals"):
                 with VerticalScroll(id="proposals-column"):
-                    yield Static("No pending proposals.", classes="empty-state", id="proposals-empty")
+                    yield Static("No pending proposals.", classes="empty-state", id="proposals-content")
 
-    def on_mount(self) -> None:
-        self.update_data()
+    async def on_mount(self) -> None:
+        await self.update_data()
         self.update_status()
         self.set_interval(2.0, self.update_data)
         self.set_interval(5.0, self.update_status)
@@ -252,7 +189,7 @@ class WardenTUI(App):
             f"socket: [{socket_color}]{socket_str}[/]"
         )
 
-    def update_data(self) -> None:
+    async def update_data(self) -> None:
         conn = self._get_db_connection()
         if not conn:
             return
@@ -265,92 +202,87 @@ class WardenTUI(App):
             cursor.execute("SELECT * FROM events ORDER BY id DESC LIMIT 100")
             events = cursor.fetchall()
             
+            # Fetch true counts
+            cursor.execute("SELECT verdict, COUNT(*) as count FROM events GROUP BY verdict")
+            counts = {row["verdict"]: row["count"] for row in cursor.fetchall()}
+            
             # Fetch proposals
             cursor.execute("SELECT * FROM proposed_rules WHERE status = 'pending' ORDER BY created_at DESC")
             proposals = cursor.fetchall()
             
-            self._update_events_ui(events)
-            self._update_proposals_ui(proposals)
+            await self._update_events_ui(events, counts)
+            await self._update_proposals_ui(proposals)
             
         except sqlite3.Error:
             pass
         finally:
             conn.close()
             
-    def _update_events_ui(self, events) -> None:
-        allowed_col = self.query_one("#allowed-column")
-        intercepted_col = self.query_one("#intercepted-column")
+    async def _update_events_ui(self, events, counts) -> None:
+        allowed_content = self.query_one("#allowed-content", Static)
+        intercepted_content = self.query_one("#intercepted-content", Static)
         summary = self.query_one("#summary", SummaryRow)
         
-        allowed_widgets = []
-        intercepted_widgets = []
-        
-        a_count = 0
-        b_count = 0
-        f_count = 0
+        allowed_lines = []
+        intercepted_lines = []
         
         for row in events:
             verdict = row["verdict"]
             timestamp = row["timestamp"]
             event_type = row["event_type"]
             parsed_str = row["parsed_action"]
+            action_text = format_action(event_type, parsed_str)
             
             if verdict == "ALLOW":
-                a_count += 1
-                action_text = format_action(event_type, parsed_str)
-                allowed_widgets.append(Static(f"[#639922]{timestamp}[/] {action_text}"))
-            elif verdict == "BLOCK":
-                b_count += 1
-                action_text = format_action(event_type, parsed_str)
-                intercepted_widgets.append(InterceptCard(timestamp, action_text, row["reason"], verdict))
-            elif verdict == "FLAG":
-                f_count += 1
-                action_text = format_action(event_type, parsed_str)
-                intercepted_widgets.append(InterceptCard(timestamp, action_text, row["reason"], verdict))
+                allowed_lines.append(f"[#639922]{timestamp}[/] {action_text}")
+            else:
+                # FLAG or BLOCK
+                color = "#E24B4A" if verdict == "BLOCK" else "#BA7517"
+                intercepted_lines.append(f"[{color}]\u2503[/] [bold]{timestamp}[/bold]")
+                intercepted_lines.append(f"[{color}]\u2503[/] {action_text}")
+                intercepted_lines.append(f"[{color}]\u2503[/] [#777777]{row['reason']}[/]")
+                intercepted_lines.append("")
                 
-        summary.allowed = a_count
-        summary.blocked = b_count
-        summary.flagged = f_count
+        summary.allowed = counts.get("ALLOW", 0)
+        summary.blocked = counts.get("BLOCK", 0)
+        summary.flagged = counts.get("FLAG", 0)
         
-        if allowed_widgets:
-            allowed_col.remove_children()
-            allowed_col.mount(*allowed_widgets)
+        if allowed_lines:
+            text_str = "\n".join(allowed_lines)
+            allowed_content.update(text_str)
+            allowed_content.remove_class("empty-state")
         elif events:
-            # Clear if there are events but none are allowed
-            allowed_col.remove_children()
-            allowed_col.mount(Static("No allowed events.", classes="empty-state", id="allowed-empty"))
+            allowed_content.update("No allowed events.")
+            allowed_content.add_class("empty-state")
             
-        if intercepted_widgets:
-            intercepted_col.remove_children()
-            intercepted_col.mount(*intercepted_widgets)
+        if intercepted_lines:
+            intercepted_content.update("\n".join(intercepted_lines))
+            intercepted_content.remove_class("empty-state")
         elif events:
-            # Clear if there are events but none are intercepted
-            intercepted_col.remove_children()
-            intercepted_col.mount(Static("No intercepted events.", classes="empty-state", id="intercepted-empty"))
+            intercepted_content.update("No intercepted events.")
+            intercepted_content.add_class("empty-state")
 
-    def _update_proposals_ui(self, proposals) -> None:
-        proposals_col = self.query_one("#proposals-column")
+    async def _update_proposals_ui(self, proposals) -> None:
+        proposals_content = self.query_one("#proposals-content", Static)
         
         if not proposals:
-            if len(proposals_col.children) == 0 or not isinstance(proposals_col.children[0], Static) or "empty-state" not in proposals_col.children[0].classes:
-                proposals_col.remove_children()
-                proposals_col.mount(Static("No pending proposals.", classes="empty-state", id="proposals-empty"))
+            proposals_content.update("No pending proposals.")
+            proposals_content.add_class("empty-state")
             return
             
-        proposals_col.remove_children()
-        cards = []
+        lines = []
         for row in proposals:
             is_allow = bool(row["permissive_change"])
             action_badge = "ALLOW" if is_allow else "BLOCK"
+            color = "#639922" if is_allow else "#E24B4A"
             
-            cards.append(ProposalCard(
-                detection_axis=row["detection_axis"],
-                binary=row["matched_binary"],
-                destination=row["matched_destination"],
-                action=action_badge,
-                reasoning=row["reasoning_text"]
-            ))
-        proposals_col.mount(*cards)
+            lines.append(f"[{color}]\u2503[/] [bold]Pattern:[/] {row['matched_binary']} \u2192 {row['matched_destination']} (Axis: {row['detection_axis']})")
+            lines.append(f"[{color}]\u2503[/] [bold]Proposed Action:[/] [{color}]{action_badge}[/]")
+            lines.append(f"[{color}]\u2503[/] [#777777]{row['reasoning_text']}[/]")
+            lines.append("")
+            
+        proposals_content.update("\n".join(lines))
+        proposals_content.remove_class("empty-state")
 
 
 if __name__ == "__main__":

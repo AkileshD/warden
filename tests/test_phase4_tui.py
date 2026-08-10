@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import pytest
 
-from clients.tui.app import WardenTUI, format_action, InterceptCard, ProposalCard, SummaryRow
+from clients.tui.app import WardenTUI, format_action, SummaryRow
 
 def test_format_action_shell_command():
     blob = json.dumps({"binary": "ls", "args": ["-l", "/tmp"]})
@@ -90,24 +90,25 @@ async def test_verdict_rendering(mock_exists):
         {"verdict": "FLAG", "timestamp": "2024-01-01T00:02:00Z", "event_type": "shell_command", "parsed_action": '{"binary":"cat"}', "reason": "flagged"},
     ]
     
+    counts = {"ALLOW": 1, "BLOCK": 1, "FLAG": 1}
+    
     async with app.run_test() as pilot:
-        app._update_events_ui(events)
+        await app._update_events_ui(events, counts)
         await pilot.pause()
         
-        allowed_col = app.query_one("#allowed-column")
-        intercepted_col = app.query_one("#intercepted-column")
+        allowed_content = app.query_one("#allowed-content")
+        intercepted_content = app.query_one("#intercepted-content")
         
-        assert len(allowed_col.children) == 1
-        assert "2024-01-01T00:00:00Z ls" in str(allowed_col.children[0].render())
+        allowed_render = str(allowed_content.render())
+        assert "2024-01-01T00:00:00Z" in allowed_render
+        assert "ls" in allowed_render
         
-        assert len(intercepted_col.children) == 2
-        card1, card2 = intercepted_col.children
+        intercepted_render = str(intercepted_content.render())
+        assert "2024-01-01T00:01:00Z" in intercepted_render
+        assert "blocked" in intercepted_render
         
-        assert isinstance(card1, InterceptCard)
-        assert "border-blocked" in card1.classes
-        
-        assert isinstance(card2, InterceptCard)
-        assert "border-flagged" in card2.classes
+        assert "2024-01-01T00:02:00Z" in intercepted_render
+        assert "flagged" in intercepted_render
         
         summary = app.query_one("#summary", SummaryRow)
         assert summary.allowed == 1
@@ -128,20 +129,16 @@ async def test_proposal_rendering(mock_exists):
     ]
     
     async with app.run_test() as pilot:
-        app._update_proposals_ui(proposals)
+        await app._update_proposals_ui(proposals)
         await pilot.pause()
         
-        col = app.query_one("#proposals-column")
-        assert len(col.children) == 2
+        content = app.query_one("#proposals-content")
+        render = str(content.render())
         
-        p1, p2 = col.children
-        assert isinstance(p1, ProposalCard)
-        assert p1.action == "ALLOW"
-        assert "ALLOW" in str(p1.render())
-        
-        assert isinstance(p2, ProposalCard)
-        assert p2.action == "BLOCK"
-        assert "BLOCK" in str(p2.render())
+        assert "1.1.1.1" in render
+        assert "ALLOW" in render
+        assert "evil.com" in render
+        assert "BLOCK" in render
 
 @pytest.mark.asyncio
 @patch("pathlib.Path.exists", return_value=False)
@@ -149,14 +146,14 @@ async def test_empty_states(mock_exists):
     """Test empty state fallback text."""
     app = WardenTUI()
     async with app.run_test() as pilot:
-        app._update_events_ui([])
-        app._update_proposals_ui([])
+        await app._update_events_ui([], {})
+        await app._update_proposals_ui([])
         await pilot.pause()
         
-        allowed_col = app.query_one("#allowed-column")
-        intercepted_col = app.query_one("#intercepted-column")
-        proposals_col = app.query_one("#proposals-column")
+        allowed_content = app.query_one("#allowed-content")
+        intercepted_content = app.query_one("#intercepted-content")
+        proposals_content = app.query_one("#proposals-content")
         
-        assert "No events recorded yet." in str(allowed_col.children[0].render())
-        assert "No events recorded yet." in str(intercepted_col.children[0].render())
-        assert "No pending proposals" in str(proposals_col.children[0].render())
+        assert "No events recorded yet." in str(allowed_content.render())
+        assert "No events recorded yet." in str(intercepted_content.render())
+        assert "No pending proposals." in str(proposals_content.render())
