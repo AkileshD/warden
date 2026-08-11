@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Warden — TUI Mockup v2</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    background: #0a0c0a;
+    margin: 0;
+    padding: 40px 20px;
+    font-family: 'SF Mono', 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+    display: flex;
+    justify-content: center;
+  }
+  .frame {
+    width: 100%;
+    max-width: 900px;
+    background: #111411;
+    border-radius: 8px;
+    border: 0.5px solid #2a2e2a;
+    overflow: hidden;
+  }
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    border-bottom: 0.5px solid #2a2e2a;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #3a3d3a; }
+  .titlebar span { color: #8a8f8a; font-size: 12px; margin-left: 6px; }
+
+  .header { padding: 16px 18px 10px; }
+  .wordmark {
+    margin: 0; color: #e4e6e2; font-size: 13px; line-height: 1.3;
+    font-weight: 500; letter-spacing: 0.2em;
+  }
+  .status-line { color: #6f746f; font-size: 12px; margin-top: 4px; }
+  .status-line .down { color: #E24B4A; }
+
+  .summary {
+    display: flex; gap: 20px; padding: 10px 18px;
+    border-top: 0.5px solid #2a2e2a; border-bottom: 0.5px solid #2a2e2a;
+  }
+  .summary .item { font-size: 12px; color: #c9ccc7; }
+  .dot-inline { font-size: 12px; }
+  .allowed-c { color: #639922; }
+  .blocked-c { color: #E24B4A; }
+  .flagged-c { color: #BA7517; }
+
+  /* Tabs */
+  .tabs {
+    display: flex; gap: 2px; padding: 0 18px;
+    border-bottom: 0.5px solid #2a2e2a; background: #0d0f0d;
+  }
+  .tab {
+    padding: 8px 14px; font-size: 11px; letter-spacing: 0.05em;
+    color: #6f746f; cursor: default; border-bottom: 2px solid transparent;
+  }
+  .tab.active { color: #e4e6e2; border-bottom: 2px solid #6f9922; }
+  .tab .kbd {
+    display: inline-block; margin-left: 6px; font-size: 10px; color: #4a4e4a;
+    border: 0.5px solid #2a2e2a; border-radius: 3px; padding: 0 4px;
+  }
+
+  /* Events tab body */
+  .events-body {
+    display: grid; grid-template-columns: 1fr 1fr; min-width: 0;
+  }
+  .col { padding: 14px 16px; min-width: 0; }
+  .col-left { border-right: 0.5px solid #2a2e2a; }
+  .col-label {
+    color: #6f746f; font-size: 11px; letter-spacing: 0.04em; margin-bottom: 10px;
+  }
+  .allowed-row { margin-bottom: 10px; color: #c9ccc7; font-size: 12px; }
+  .ts { color: #565a56; margin-right: 8px; }
+
+  .intercept-card {
+    margin-bottom: 12px; padding: 8px 10px; border-radius: 0;
+  }
+  .intercept-card.blocked { background: #2a1414; border-left: 2px solid #E24B4A; }
+  .intercept-card.flagged { background: #2a2110; border-left: 2px solid #BA7517; }
+  .intercept-cmd { font-size: 12px; margin-bottom: 3px; }
+  .intercept-card.blocked .intercept-cmd { color: #f0a5a5; }
+  .intercept-card.flagged .intercept-cmd { color: #e8c98a; }
+  .intercept-reason { color: #8a8f8a; font-size: 11px; }
+
+  /* Proposals tab body */
+  .proposals-body { padding: 14px 18px; display: none; }
+  .proposals-body.active { display: block; }
+  .events-body.hidden { display: none; }
+
+  .proposal-card {
+    background: #14170f; border: 0.5px solid #2a2e2a; border-left: 2px solid #6f9922;
+    border-radius: 0; padding: 10px 12px; margin-bottom: 10px;
+  }
+  .proposal-top {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 6px;
+  }
+  .proposal-pattern { color: #e4e6e2; font-size: 12px; }
+  .proposal-action {
+    font-size: 10px; letter-spacing: 0.05em; padding: 1px 6px; border-radius: 2px;
+  }
+  .proposal-action.allow { color: #9fd15c; background: #1a2210; }
+  .proposal-action.block { color: #f0a5a5; background: #2a1414; }
+  .proposal-meta { color: #6f746f; font-size: 11px; margin-bottom: 4px; }
+  .proposal-meta .axis {
+    color: #8a9dbf; border: 0.5px solid #2a3540; border-radius: 2px;
+    padding: 0 4px; margin-right: 6px;
+  }
+  .proposal-reasoning { color: #9a9e99; font-size: 11px; line-height: 1.4; }
+
+  .empty-state {
+    text-align: center; color: #4a4e4a; font-size: 12px; padding: 24px 0;
+  }
+
+  .footer-hint {
+    padding: 8px 18px; border-top: 0.5px solid #2a2e2a;
+    color: #4a4e4a; font-size: 10px;
+  }
+</style>
+</head>
+<body>
+
+<div class="frame">
+  <div class="titlebar">
+    <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    <span>warden — live</span>
+  </div>
+
+  <div class="header">
+    <pre class="wordmark">W A R D E N</pre>
+    <div class="status-line">jail: up · sidecar: up · socket: connected</div>
+  </div>
+
+  <div class="summary">
+    <div class="item"><span class="dot-inline allowed-c">●</span> allowed 15</div>
+    <div class="item"><span class="dot-inline blocked-c">●</span> blocked 2</div>
+    <div class="item"><span class="dot-inline flagged-c">●</span> flagged 1</div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active">EVENTS <span class="kbd">tab</span></div>
+    <div class="tab">PROPOSALS (2) <span class="kbd">tab</span></div>
+  </div>
+
+  <!-- EVENTS TAB -->
+  <div class="events-body">
+    <div class="col col-left">
+      <div class="col-label">ALLOWED</div>
+      <div class="allowed-row"><span class="ts">14:02:11</span>echo hello &gt; project/hello.txt</div>
+      <div class="allowed-row"><span class="ts">14:02:18</span>python3 ./project/net_test_allow.py</div>
+      <div class="allowed-row"><span class="ts">14:02:19</span>net → 104.20.23.154:443</div>
+      <div class="allowed-row"><span class="ts">14:02:22</span>ls ./project</div>
+      <div class="allowed-row"><span class="ts">14:02:25</span>ls</div>
+    </div>
+
+    <div class="col">
+      <div class="col-label">INTERCEPTED</div>
+
+      <div class="intercept-card blocked">
+        <div class="intercept-cmd"><span class="ts">14:02:14</span>rm -rf /tmp/testfile</div>
+        <div class="intercept-reason">blocked · outside project scope · faked</div>
+      </div>
+
+      <div class="intercept-card blocked">
+        <div class="intercept-cmd"><span class="ts">14:02:16</span>cat ./project/.env</div>
+        <div class="intercept-reason">blocked · secret pattern · faked</div>
+      </div>
+
+      <div class="intercept-card flagged">
+        <div class="intercept-cmd"><span class="ts">14:02:27</span>curl http://unknown-host.example</div>
+        <div class="intercept-reason">flagged · unmatched, outside scope · faked</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PROPOSALS TAB -->
+  <div class="proposals-body">
+    <div class="col-label" style="padding: 0 0 12px 0;">PENDING PROPOSALS</div>
+
+    <div class="proposal-card">
+      <div class="proposal-top">
+        <span class="proposal-pattern">curl → api.internal-tool.dev</span>
+        <span class="proposal-action allow">ALLOW</span>
+      </div>
+      <div class="proposal-meta">
+        <span class="axis">axis: hostname</span> matched 11× in 6h
+      </div>
+      <div class="proposal-reasoning">
+        Repeated network calls to this hostname were flagged 11 times in the
+        last 6 hours, all from the same binary. No blocks against this
+        destination in the sample window.
+      </div>
+    </div>
+
+    <div class="proposal-card">
+      <div class="proposal-top">
+        <span class="proposal-pattern">python3 → 185.199.108.0/24</span>
+        <span class="proposal-action block">BLOCK</span>
+      </div>
+      <div class="proposal-meta">
+        <span class="axis">axis: dst_ip</span> matched 14× in 6h
+      </div>
+      <div class="proposal-reasoning">
+        Repeated flagged connections to this IP range from python3 with no
+        successful prior ALLOW rule. Candidate for an explicit BLOCK.
+      </div>
+    </div>
+  </div>
+
+  <div class="footer-hint">approve/reject via: warden approve — this view is read-only</div>
+</div>
+
+</body>
+</html>

@@ -9,9 +9,7 @@ project/test/
 *.log
 *.svg
 .DS_Store
-fix_*.py
-patch_*.py
-test_sql.py
+scratch/
 
 ledger_data/
 *.db-shm

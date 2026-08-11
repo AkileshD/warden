@@ -1,8 +1,0 @@
-> docker-compose up -d
- Container warden-jail-1 Running 
- Container warden-warden-sidecar-1 Recreate 
- Container warden-warden-sidecar-1 Recreated 
- Container warden-warden-sidecar-1 Starting 
- Container warden-warden-sidecar-1 Started 
-Containers are up. Starting WardenDaemon...
-WardenDaemon running. Control socket listening at /tmp/warden_ipc/warden_control.sock
