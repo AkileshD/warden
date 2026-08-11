@@ -42,7 +42,12 @@ ALLOW  ls ./project/; rm -rf /        ← chained: ls is real, rm is faked
 git clone https://github.com/AkileshD/warden
 cd warden
 pip install -r requirements.txt
-python3 demo/run_demo.py
+
+# Start the Warden daemon in one terminal:
+./warden daemon start
+
+# In a separate terminal, run the agent test loop:
+python3 demo/run_agent_test.py
 ```
 
 Requires Python 3.11+. No network access. No install step beyond PyYAML.
@@ -82,18 +87,15 @@ Three verdicts:
 python3 -m pytest tests/ -v
 ```
 
-77 tests. Should be green on any POSIX system with Python 3.11+.
+346 tests. Should be green on any POSIX system with Python 3.11+.
 
 ## Roadmap
 
 These are not built. They are not promised. They are the intended direction.
 
-- **Phase 2** — Network layer — intercepting agent network calls that bypass the shell entirely. Exact mechanism (NFQUEUE, eBPF, or a simpler iptables-based stopgap) not yet decided.
-- **Phase 3** — Smart policy loop (an advisory model watches the ledger and
-  proposes policy tightening; a human approves before anything changes)
-- **Phase 4** — Dashboard (read-only view of the ledger, designed to
-  WARDEN_SPEC §9 aesthetic requirements — no UI ships without a design
-  spec first)
+- **Phase 5 Part 2** — Agent Integration Layer (Python SDK & Dashboard)
+- **Phase 6** — Packaging/distribution (ship as "requires Docker" for v1.0)
+- **v2.0** — eBPF/Rust migration for network interceptor
 
 ## Why this approach
 
@@ -106,7 +108,10 @@ anything went wrong.
 
 ## Status
 
-Phase 1 (command interception + fake shell) is complete and tested.
-Phases 2–4 are not started.
+- **Phase 1** (Command Interception) — **COMPLETE**
+- **Phase 2** (Network Guard via Sidecar) — **COMPLETE**
+- **Phase 3** (Smart Policy Loop) — **COMPLETE**
+- **Phase 4** (Minimalist TUI) — **COMPLETE**
+- **Phase 5** (Agent Control Socket) — **COMPLETE (Part 1)**
 
 MIT License

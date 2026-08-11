@@ -6,7 +6,13 @@ test_output.log
 project/project/
 project/test/
 
-design/
+*.log
+*.svg
+.DS_Store
+fix_*.py
+patch_*.py
+test_sql.py
+
 ledger_data/
 *.db-shm
 *.db-wal
