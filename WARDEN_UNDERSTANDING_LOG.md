@@ -322,5 +322,35 @@ Rather than running a real agent for many hours to produce enough flagged networ
 
 
 ### Phase 4 — TUI dashboard: Textual reactive UI pattern
-**What it is:** Textual is a Rapid Application Development framework for Python used to build Terminal User Interfaces (TUIs). It uses a declarative DOM (Document Object Model) and CSS-like styling, much like building a modern web app.
-**Why it matters:** Textual's `reactive` properties allow the UI to automatically re-render when underlying state variables (like counters or status strings) change. By combining `set_interval` polling on the SQLite ledger with reactive attributes, Warden's Phase 4 dashboard achieves live updates without complex threading or manual render loop management.
+**Part of:** Phase 4 — `clients/tui/app.py`
+**Why it came up:** We needed a way to build a terminal dashboard that automatically updates when new events are logged to the database.
+
+**Plain English:**
+Textual is a Python framework used to build Terminal User Interfaces (TUIs). It works very much like a modern web browser, using a Document Object Model (DOM) and CSS-like styling. It supports "reactive" properties, meaning that if you tell Textual a specific variable has changed (like a counter), it automatically redraws just the part of the screen that depends on that variable. We use this by polling the database every few seconds and updating the reactive variables, giving us a live-updating dashboard without writing complex screen-refreshing code.
+
+**Technical:**
+Textual's `reactive` attributes trigger automatic widget re-renders when their underlying values change. By combining `self.set_interval(2.0, self.update_data)` with reactive properties on custom widgets (e.g., `SummaryRow`), the Phase 4 dashboard achieves live updates. This pattern avoids explicit DOM manipulation or manual render loop management, cleanly separating the SQLite polling logic from the TUI rendering pipeline.
+
+---
+
+### Textual Layout Engine (Flexbox vs Percentages)
+**Part of:** Phase 4 — `clients/tui/app.py`
+**Why it came up:** During Phase 4, the Events tab mysteriously rendered as completely empty, even though the text buffer was populated with data in the Textual widget.
+
+**Plain English:**
+In the `Textual` Python library, using a percentage height like `height: 100%` inside certain container widgets (like a `TabPane`) will cause the height to collapse to zero because the parent container does not explicitly pass down a height constraint. To fix this, you must use `height: 1fr` instead, which tells the layout engine to "consume all available flexible space" rather than trying to calculate a strict percentage of an undefined parent height.
+
+**Technical:**
+Textual uses a flexbox-like CSS layout engine. When a `Horizontal` container with `height: 100%` is placed inside a `TabPane`, the layout engine fails to compute a definitive pixel height because the `TabPane` height itself is flexible. This results in a computed `Size(width=X, height=0)` region for the container, rendering all its children invisible regardless of their own `renderable` content size. Replacing `height: 100%` with `height: 1fr` explicitly assigns the container a flex-grow factor of 1, allowing it to correctly expand into the available region.
+
+---
+
+### Structural Read-Only SQLite Connections
+**Part of:** Phase 4 — `clients/tui/app.py`
+**Why it came up:** Phase 4 required the dashboard to be strictly read-only so it could never accidentally corrupt the main Warden ledger, even via a logic bug.
+
+**Plain English:**
+Instead of just "promising not to write" in the Python code by only running SELECT queries, we learned how to enforce read-only access at the lowest level—the database driver itself. By connecting to the SQLite database in a special "URI mode", we can append a read-only flag. This guarantees a structural read-only lock, meaning if any code ever tries to write to the database, SQLite itself will block it and throw an error, preventing accidental corruption.
+
+**Technical:**
+SQLite supports URI filenames that allow query parameters. By passing `uri=True` to `sqlite3.connect()` and appending `?mode=ro` to the path (e.g., `sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)`), the SQLite driver strictly limits the connection to `SQLITE_OPEN_READONLY`. This provides an invariant, structural guarantee against unintended `INSERT`, `UPDATE`, or `DELETE` operations, eliminating the risk of a TUI client bug corrupting the active WAL-mode ledger.
